@@ -158,7 +158,7 @@ DRESULT USER_ioctl (
 {
   /* USER CODE BEGIN IOCTL */
 
-    return SD_disk_ioctl(drv, ctrl, buff);
+    return SD_disk_ioctl(pdrv, cmd, buff);
   /* USER CODE END IOCTL */
 }
 #endif /* _USE_IOCTL == 1 */

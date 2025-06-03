@@ -75,11 +75,10 @@ UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart6;
 
 /* USER CODE BEGIN PV */
-TaskHandle_t xMainTask;
-BaseType_t status;
 
-TaskHandle_t xTransmitTask;
-BaseType_t transmit;
+
+
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -102,6 +101,12 @@ volatile bool enterLowPower = false;
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+//This is where tasks are then created and started
+TaskHandle_t xMainTask;
+BaseType_t status;
+
+TaskHandle_t xTransmitTask;
+BaseType_t transmit;
 
 /* USER CODE END 0 */
 
@@ -147,9 +152,10 @@ int main(void)
   Mount_SD("/");
   Format_SD();
   Create_File("ADC_DATA.TXT");
-  Create_Dir("TEMP.TXT");
+  Create_File("TEMP.TXT");
   Unmount_SD("/");
 
+//TODO add binary semaphore
 
   HAL_TIM_Base_Start(&htim2); // Timer for Temp
 
@@ -567,6 +573,9 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_10, GPIO_PIN_RESET);
 
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
+
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
@@ -606,6 +615,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PB6 */
+  GPIO_InitStruct.Pin = GPIO_PIN_6;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
