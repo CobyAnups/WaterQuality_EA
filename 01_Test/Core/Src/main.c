@@ -109,21 +109,21 @@ TaskHandle_t xTransmitTask;
 BaseType_t transmit;
 
 SemaphoreHandle_t xBinarySemaphore;
+//todo
+
+char uart_buf[128];
+uint32_t  adc_raw_ph, adc_raw_do;
+uint32_t   ph_v, ph_cv, do_v, do_cv;
+int16_t temp_scaled;
+int temp_v, temp_cv;
 
 
-
+uint16_t Batt_raw;
 
 void MainTask_handle(void*parameters)
 {
 
-	char uart_buf[128];
-	uint32_t  adc_raw_ph, adc_raw_do;
-	uint32_t   ph_v, ph_cv, do_v, do_cv;
-	int16_t temp_scaled;
-	int temp_v, temp_cv;
 
-
-	uint16_t Batt_raw;
 	while(1)
 	{
         printf("Start");
@@ -263,7 +263,7 @@ void MainTask_handle(void*parameters)
 		HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);   // PC3: Sensor OFF
 		printf("5 sec delay then continue to Dispose\n");
 		vTaskDelay(pdMS_TO_TICKS(5000));// Wait 5 seconds before repeating the 5-set loop
-		printf("Dispose \n");
+
 
 
 
@@ -305,14 +305,13 @@ void MainTask_handle(void*parameters)
 void TransmitTask_handle(void* parameters) //todo transmit task
 {
 
-	int indx=1;
     while (1)
     {
 
     	if (xSemaphoreTake(xBinarySemaphore, portMAX_DELAY) == pdTRUE) {
 
     		printf("Transmit Task Running\n");
-    	}
+
 //    		char *buffer = pvPortMalloc(50*sizeof(char));
 //    		sprintf (buffer, "%d. %u\n", indx,ADC_VAL);
 //    		Mount_SD("/");
@@ -329,16 +328,15 @@ void TransmitTask_handle(void* parameters) //todo transmit task
 
 
 
+			Mount_SD("/");
+			Update_File("LOGS.TXT", uart_buf);
+			//vPortFree(uart_buf);
+			Unmount_SD("/");
 
-//    		printf("Transmit Task Running\n");
-//			Mount_SD("/");
-//			Update_File("LOGS.TXT", uart_buf);
-//			//vPortFree(uart_buf);
-//			Unmount_SD("/");
-//
-//			indx++;
-//
-//			vTaskDelay(1000);
+
+
+			vTaskDelay(1000);
+    	}
     }
 
 
