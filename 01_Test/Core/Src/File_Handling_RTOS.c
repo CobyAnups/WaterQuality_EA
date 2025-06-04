@@ -7,7 +7,7 @@
 
 #include "File_Handling_RTOS.h"
 #include "stm32f4xx_hal.h"
-
+#include "stdio.h"
 
 extern UART_HandleTypeDef huart2;
 #define UART &huart2

@@ -108,6 +108,243 @@ BaseType_t status;
 TaskHandle_t xTransmitTask;
 BaseType_t transmit;
 
+SemaphoreHandle_t xBinarySemaphore;
+
+
+
+
+void MainTask_handle(void*parameters)
+{
+
+	char uart_buf[128];
+	uint32_t  adc_raw_ph, adc_raw_do;
+	uint32_t   ph_v, ph_cv, do_v, do_cv;
+	int16_t temp_scaled;
+	int temp_v, temp_cv;
+
+
+	uint16_t Batt_raw;
+	while(1)
+	{
+        printf("Start");
+        vTaskDelay(pdMS_TO_TICKS(3000));
+
+
+
+        //Turn 5V IO on Charge controller set as HIGH PC12
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_12, GPIO_PIN_SET);  // PC12: HIGH
+        vTaskDelay(pdMS_TO_TICKS(3000));
+
+        //Turn Pin LOW PC10
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_10, GPIO_PIN_RESET);  // PC10: LOW
+        vTaskDelay(pdMS_TO_TICKS(3000));
+
+
+        //Read ADC on PA0
+		HAL_ADC_ConfigChannel(&hadc1, &(ADC_ChannelConfTypeDef){
+		    .Channel = ADC_CHANNEL_0,
+		    .Rank = 1,
+		    .SamplingTime = ADC_SAMPLETIME_84CYCLES
+		});
+		HAL_ADC_Start(&hadc1);
+		HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
+		Batt_raw = HAL_ADC_GetValue(&hadc1);
+
+		//INSERT TABLE BELOW
+
+
+		//Test
+
+
+
+
+
+        // Turn everything ON
+        printf("PUMPING ON\n");
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);  // PC3: Pump ON
+
+        vTaskDelay(pdMS_TO_TICKS(6000));  // 90 seconds delay while ON
+
+
+        // Turn Pump OFF
+        printf("PUMP OFF, \n SENSORS ON\n");
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);  // PC3 Pump OFF
+
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_10, GPIO_PIN_SET);   // PA10: Sensor ON
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_4, GPIO_PIN_SET);   // PC4: Sensor ON
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_SET);   // PC5: Sensor ON
+        vTaskDelay(pdMS_TO_TICKS(6000));  // 60 seconds delay while pump is OFF
+
+
+
+		// Read Sensors
+        printf("GETTING DATA\n");
+		uint32_t count = __HAL_TIM_GET_COUNTER(&htim2);
+		printf("TIM2 Counter: %lu\n", count);
+//		for (int i = 0; i < 5; ++i)
+//		{
+		printf("reading temp");
+
+		// ----------- Temp (DS18B20) -----------
+		//taskENTER_CRITICAL();
+		temp_scaled = Temperature_Read();  // 16x the real temperature
+		//taskEXIT_CRITICAL();
+
+		// Separate integer and fractional parts
+		temp_v = temp_scaled / 100;
+		temp_cv = temp_scaled % 100;
+
+
+		printf("DO \n");
+		// ----------- DO (now on PA1 - ADC_CHANNEL_1) -----------
+		HAL_ADC_ConfigChannel(&hadc1, &(ADC_ChannelConfTypeDef){
+			.Channel = ADC_CHANNEL_1,
+			.Rank = 1,
+			.SamplingTime = ADC_SAMPLETIME_84CYCLES
+		});
+		HAL_ADC_Start(&hadc1);
+		HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
+		adc_raw_do = HAL_ADC_GetValue(&hadc1);
+		uint32_t do_scaled = (adc_raw_do * 330) / 4095;
+		do_v = do_scaled / 100;
+		do_cv = do_scaled % 100;
+
+		printf("pH \n");
+		// ----------- pH (now on PB0 - ADC_CHANNEL_8) -----------
+		HAL_ADC_ConfigChannel(&hadc1, &(ADC_ChannelConfTypeDef){
+			.Channel = ADC_CHANNEL_8,
+			.Rank = 1,
+			.SamplingTime = ADC_SAMPLETIME_84CYCLES
+		});
+		HAL_ADC_Start(&hadc1);
+		HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
+		adc_raw_ph = HAL_ADC_GetValue(&hadc1);
+		uint32_t ph_scaled = (adc_raw_ph * 330) / 4095;
+		ph_v = ph_scaled / 100;
+		ph_cv = ph_scaled % 100;
+
+
+
+		// --- Get RTC Time & Date ---
+		RTC_TimeTypeDef sTime;
+		RTC_DateTypeDef sDate;
+		HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+		HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+
+
+		// --- Final UART Print with Timestamp ---
+		snprintf(uart_buf, sizeof(uart_buf),
+				 "[%04d-%02d-%02dT%02d:%02d:%02d] | Temp: %d.%02d°C, DO: %lu.%02luV, pH: %lu.%02luV\r\n",
+				 2000 + sDate.Year, sDate.Month, sDate.Date,
+				 sTime.Hours, sTime.Minutes, sTime.Seconds,
+				 temp_v, temp_cv,
+				 do_v, do_cv,
+				 ph_v, ph_cv);
+
+
+		/*// Formatted code below
+		 * snprintf(uart_buf, sizeof(uart_buf), "{\"local_time\":\"%04d-%02d-%02dT%02d:%02d:%02d\", \"temp\":%d.%02d, \"ph\":%lu, \"do\":%lu.%02lu, \"batt\":%lu}",
+			 2000 + sDate.Year, sDate.Month, sDate.Date,
+			 sTime.Hours, sTime.Minutes, sTime.Seconds,
+			 temp_v, temp_cv,
+			 ph_v,
+			 do_v, do_cv,
+			 bat_v);  // <-- make sure you define and calculate bat_v earlier
+		 */
+
+		HAL_UART_Transmit(&huart2, (uint8_t *)uart_buf, strlen(uart_buf), HAL_MAX_DELAY);
+		xSemaphoreGive(xBinarySemaphore);
+		vTaskDelay(3000 / portTICK_PERIOD_MS); // 1 second between each reading
+//		}
+
+		printf("SENSORS OFF\n");
+		HAL_GPIO_WritePin(GPIOC, GPIO_PIN_0, GPIO_PIN_RESET);   // PC0: Sensor OFF
+		HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_RESET);   // PC1: Sensor OFF
+		HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);   // PC3: Sensor OFF
+		printf("5 sec delay then continue to Dispose\n");
+		vTaskDelay(pdMS_TO_TICKS(5000));// Wait 5 seconds before repeating the 5-set loop
+		printf("Dispose \n");
+
+
+
+
+
+
+        // Notify another task
+
+
+
+
+
+        // Wait briefly before next cycle
+
+
+        printf("Dispose \n ");
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_4, GPIO_PIN_RESET);  // PC4: Pump ON
+        vTaskDelay(pdMS_TO_TICKS(10000));
+
+        printf("StopClean \n");
+		HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_SET);  // PC4: Pump OFF
+		vTaskDelay(pdMS_TO_TICKS(3000));
+
+        printf("Cleaning \n");
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_RESET);  // PC4: Pump ON
+        vTaskDelay(pdMS_TO_TICKS(7000));
+
+
+
+        printf("StopDispose \n");
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_4, GPIO_PIN_SET);  // PC4: Pump OFF
+
+        printf("entering low power \n");
+        enterLowPower = true;
+
+	}
+}
+
+void TransmitTask_handle(void* parameters) //todo transmit task
+{
+
+	int indx=1;
+    while (1)
+    {
+
+    	if (xSemaphoreTake(xBinarySemaphore, portMAX_DELAY) == pdTRUE) {
+
+    		printf("Transmit Task Running\n");
+    	}
+//    		char *buffer = pvPortMalloc(50*sizeof(char));
+//    		sprintf (buffer, "%d. %u\n", indx,ADC_VAL);
+//    		Mount_SD("/");
+//    		Update_File("LOGS.TXT", buffer);
+//    		sprintf (buffer, "%d. Temp = %d C\t RH = %d \n",indx, Temperature, Humidity);
+//    		Update_File("TEMP.TXT", buffer);
+//    		vPortFree(buffer);
+//    		Unmount_SD("/");
+//
+//    		indx++;
+//
+//    		vTaskDelay(1000);
+
+
+
+
+
+//    		printf("Transmit Task Running\n");
+//			Mount_SD("/");
+//			Update_File("LOGS.TXT", uart_buf);
+//			//vPortFree(uart_buf);
+//			Unmount_SD("/");
+//
+//			indx++;
+//
+//			vTaskDelay(1000);
+    }
+
+
+
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -151,12 +388,12 @@ int main(void)
 
   Mount_SD("/");
   Format_SD();
-  Create_File("ADC_DATA.TXT");
-  Create_File("TEMP.TXT");
+  Create_File("LOGS.TXT");
   Unmount_SD("/");
 
 //TODO add binary semaphore
 
+  xBinarySemaphore = xSemaphoreCreateBinary();
   HAL_TIM_Base_Start(&htim2); // Timer for Temp
 
   HAL_TIM_Base_Start(&htim1); // periodic delay timer for SD Card
@@ -630,201 +867,6 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
-static void MainTask_handle(void*parameters)
-{
-//	int16_t temp_scaled;
-//	int temp_v, temp_cv;
-//	char buffer[50];
-	uint16_t Batt_raw;
-	while(1)
-	{
-        printf("Start");
-        vTaskDelay(pdMS_TO_TICKS(3000));
-
-
-
-        //Turn 5V IO on Charge controller set as HIGH PC12
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_12, GPIO_PIN_SET);  // PC12: HIGH
-        vTaskDelay(pdMS_TO_TICKS(3000));
-
-        //Turn Pin LOW PC10
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_10, GPIO_PIN_RESET);  // PC10: LOW
-        vTaskDelay(pdMS_TO_TICKS(3000));
-
-
-        //Read ADC on PA0
-		HAL_ADC_ConfigChannel(&hadc1, &(ADC_ChannelConfTypeDef){
-		    .Channel = ADC_CHANNEL_0,
-		    .Rank = 1,
-		    .SamplingTime = ADC_SAMPLETIME_84CYCLES
-		});
-		HAL_ADC_Start(&hadc1);
-		HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
-		Batt_raw = HAL_ADC_GetValue(&hadc1);
-
-		//INSERT TABLE BELOW
-
-
-		//Test
-
-
-
-
-
-        // Turn everything ON
-        printf("PUMPING ON\n");
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);  // PC3: Pump ON
-
-        vTaskDelay(pdMS_TO_TICKS(6000));  // 90 seconds delay while ON
-
-
-        // Turn Pump OFF
-        printf("PUMP OFF, \n SENSORS ON\n");
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);  // PC3 Pump OFF
-
-        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_10, GPIO_PIN_SET);   // PA10: Sensor ON
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_4, GPIO_PIN_SET);   // PC4: Sensor ON
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_SET);   // PC5: Sensor ON
-        vTaskDelay(pdMS_TO_TICKS(6000));  // 60 seconds delay while pump is OFF
-
-
-
-		printf("NextTask");
-        // Notify another task
-        xTaskNotify(xTransmitTask, 0, eNoAction);
-
-
-
-
-        // Wait briefly before next cycle
-
-
-        printf("Dispose \n ");
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_4, GPIO_PIN_RESET);  // PC4: Pump ON
-        vTaskDelay(pdMS_TO_TICKS(10000));
-
-        printf("StopClean \n");
-		HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_SET);  // PC4: Pump OFF
-		vTaskDelay(pdMS_TO_TICKS(3000));
-
-        printf("Cleaning \n");
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_RESET);  // PC4: Pump ON
-        vTaskDelay(pdMS_TO_TICKS(7000));
-
-
-
-        printf("StopDispose \n");
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_4, GPIO_PIN_SET);  // PC4: Pump OFF
-
-        printf("entering low power \n");
-        enterLowPower = true;
-
-	}
-}
-
-static void TransmitTask_handle(void* parameters)
-{
-	char uart_buf[128];
-	uint32_t  adc_raw_ph, adc_raw_do;
-	uint32_t   ph_v, ph_cv, do_v, do_cv;
-	int16_t temp_scaled;
-	int temp_v, temp_cv;
-
-    while (1)
-    {
-    	if (xTaskNotifyWait(0, 0, NULL, portMAX_DELAY)== pdTRUE)
-    	{
-    		printf("GETTING DATA\n");
-    	    uint32_t count = __HAL_TIM_GET_COUNTER(&htim2);
-    	    printf("TIM2 Counter: %lu\n", count);
-			for (int i = 0; i < 5; ++i)
-			{
-				printf("reading temp");
-
-				// ----------- Temp (DS18B20) -----------
-				//taskENTER_CRITICAL();
-				temp_scaled = Temperature_Read();  // 16x the real temperature
-				//taskEXIT_CRITICAL();
-
-				// Separate integer and fractional parts
-				temp_v = temp_scaled / 100;
-				temp_cv = temp_scaled % 100;
-
-
-				printf("DO \n");
-				// ----------- DO (now on PA1 - ADC_CHANNEL_1) -----------
-				HAL_ADC_ConfigChannel(&hadc1, &(ADC_ChannelConfTypeDef){
-				    .Channel = ADC_CHANNEL_1,
-				    .Rank = 1,
-				    .SamplingTime = ADC_SAMPLETIME_84CYCLES
-				});
-				HAL_ADC_Start(&hadc1);
-				HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
-				adc_raw_do = HAL_ADC_GetValue(&hadc1);
-				uint32_t do_scaled = (adc_raw_do * 330) / 4095;
-				do_v = do_scaled / 100;
-				do_cv = do_scaled % 100;
-
-				printf("pH \n");
-				// ----------- pH (now on PB0 - ADC_CHANNEL_8) -----------
-				HAL_ADC_ConfigChannel(&hadc1, &(ADC_ChannelConfTypeDef){
-				    .Channel = ADC_CHANNEL_8,
-				    .Rank = 1,
-				    .SamplingTime = ADC_SAMPLETIME_84CYCLES
-				});
-				HAL_ADC_Start(&hadc1);
-				HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
-				adc_raw_ph = HAL_ADC_GetValue(&hadc1);
-				uint32_t ph_scaled = (adc_raw_ph * 330) / 4095;
-				ph_v = ph_scaled / 100;
-				ph_cv = ph_scaled % 100;
-
-
-
-				// --- Get RTC Time & Date ---
-				RTC_TimeTypeDef sTime;
-				RTC_DateTypeDef sDate;
-				HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
-				HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
-
-
-				// --- Final UART Print with Timestamp ---
-				snprintf(uart_buf, sizeof(uart_buf),
-				         "[%04d-%02d-%02dT%02d:%02d:%02d] | Temp: %d.%02d°C, DO: %lu.%02luV, pH: %lu.%02luV\r\n",
-				         2000 + sDate.Year, sDate.Month, sDate.Date,
-				         sTime.Hours, sTime.Minutes, sTime.Seconds,
-						 temp_v, temp_cv,
-				         do_v, do_cv,
-				         ph_v, ph_cv);
-
-
-				/*// Formatted code below
-				 * snprintf(uart_buf, sizeof(uart_buf), "{\"local_time\":\"%04d-%02d-%02dT%02d:%02d:%02d\", \"temp\":%d.%02d, \"ph\":%lu, \"do\":%lu.%02lu, \"batt\":%lu}",
-					 2000 + sDate.Year, sDate.Month, sDate.Date,
-					 sTime.Hours, sTime.Minutes, sTime.Seconds,
-					 temp_v, temp_cv,
-					 ph_v,
-					 do_v, do_cv,
-					 bat_v);  // <-- make sure you define and calculate bat_v earlier
-				 */
-
-				HAL_UART_Transmit(&huart2, (uint8_t *)uart_buf, strlen(uart_buf), HAL_MAX_DELAY);
-
-				vTaskDelay(1000 / portTICK_PERIOD_MS); // 1 second between each reading
-			}
-
-			printf("SENSORS OFF\n");
-	        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_0, GPIO_PIN_RESET);   // PC0: Sensor OFF
-	        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_RESET);   // PC1: Sensor OFF
-	        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);   // PC3: Sensor OFF
-	        printf("5 sec delay then continue to Dispose\n");
-			vTaskDelay(pdMS_TO_TICKS(5000));// Wait 5 seconds before repeating the 5-set loop
-
-    	}
-
-
-    }
-}
 
 void vApplicationIdleHook(void){
 
@@ -833,6 +875,7 @@ void vPortSuppressTicksAndSleep(TickType_t xExpectedIdleTime)
 {
     if (enterLowPower)
     {
+
         // Disable SysTick
         SysTick->CTRL &= ~SysTick_CTRL_ENABLE_Msk;
 
