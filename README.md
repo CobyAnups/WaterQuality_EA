@@ -15,6 +15,7 @@ Currently, it has a lot of GPIOs, and EA task
 60Mhz due to SPI Timer configuration. 
 
 Structure: 2 tasks, 
+
 **First task**
   -ADC battery check 
   -If battery < (min_Val)
