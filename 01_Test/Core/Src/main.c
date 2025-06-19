@@ -120,7 +120,7 @@ uint32_t  adc_raw_ph, adc_raw_do;
 uint32_t   ph_v, ph_cv, do_v, do_cv;
 int16_t temp_scaled;
 int temp_v, temp_cv;
-
+uint16_t sleep_time = 30; // 1 hour in seconds //TODO change
 
 uint16_t Batt_raw;
 //todo
@@ -130,8 +130,8 @@ void MainTask_handle(void*parameters)
 
 	while(1)
 	{
-        printf("Start");
-        vTaskDelay(pdMS_TO_TICKS(3000));
+        printf("Program Start \n");
+        //vTaskDelay(pdMS_TO_TICKS(3000));
 
 
 
@@ -146,7 +146,7 @@ void MainTask_handle(void*parameters)
 
         //Read ADC on PA0
 		HAL_ADC_ConfigChannel(&hadc1, &(ADC_ChannelConfTypeDef){
-		    .Channel = ADC_CHANNEL_0,
+		    .Channel = ADC_CHANNEL_0, //TODO Must be channel PC2
 		    .Rank = 1,
 		    .SamplingTime = ADC_SAMPLETIME_84CYCLES
 		});
@@ -159,27 +159,32 @@ void MainTask_handle(void*parameters)
 		{
 			printf("Battery Level: 0-10%%\n");
 			//todo UART Transmit Low battery %d Batt_raw
+			sleep_time = 30; // 30 seconds in seconds
 			enterLowPower = true; // Set flag to enter low power mode
+			vTaskDelay(pdMS_TO_TICKS(10000)); // Delay to allow Task Block to low power mode.
 		}
 		else {
 
 
 			if (Batt_raw < Level_1) {// 10-20%
+				sleep_time = 60; // 6 hours in seconds
 
-				//set wakeup timer to Every 6 hours
 				printf("Battery Level: 10-20%%\n");
 				//todo SET SLEEP_TIME to 6 hours
 			}
 			else if (Batt_raw < Level_2) {
 				//set wakeup timer to Every 4 hours
+				sleep_time = 14400; // 4 hours in seconds
 				printf("Battery Level: 20-30%%\n");
 			}
 			else if (Batt_raw < Level_3) {
 				//set wakeup timer to Every 2 hours
+				sleep_time = 7200; // 2 hours in seconds
 				printf("Battery Level: 30-40%%\n");
 			}
 			else if (Batt_raw < Level_4) {
 				//set wakeup timer to Every 1 hour
+				sleep_time = 3600; // 1 hour in seconds
 				printf("Battery Level: 40-50%%\n");
 			}
 
@@ -289,18 +294,14 @@ void MainTask_handle(void*parameters)
 			vTaskDelay(pdMS_TO_TICKS(5000));// Wait 5 seconds before repeating the 5-set loop
 
 
-
-
-
-
-
+//TODO add timers on each one
 
 			// Wait briefly before next cycle
 
 
 			printf("Dispose \n ");
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_4, GPIO_PIN_RESET);  // PC4: Pump ON
-			vTaskDelay(pdMS_TO_TICKS(10000));
+			vTaskDelay(pdMS_TO_TICKS(3000));
 
 			printf("StopClean \n");
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_SET);  // PC4: Pump OFF
@@ -308,7 +309,7 @@ void MainTask_handle(void*parameters)
 
 			printf("Cleaning \n");
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_RESET);  // PC4: Pump ON
-			vTaskDelay(pdMS_TO_TICKS(7000));
+			vTaskDelay(pdMS_TO_TICKS(3000));
 
 
 
@@ -317,6 +318,7 @@ void MainTask_handle(void*parameters)
 
 			printf("entering low power \n");
 			enterLowPower = true;
+			vTaskDelay(pdMS_TO_TICKS(10000)); //ADDED 15 seconds delay before next cycle
 		}
 	}
 }
@@ -391,8 +393,6 @@ int main(void)
   Format_SD();
   Create_File("LOGS.TXT");
   Unmount_SD("/");
-
-//TODO add binary semaphore
 
   xBinarySemaphore = xSemaphoreCreateBinary();
   HAL_TIM_Base_Start(&htim2); // Timer for Temp
@@ -506,7 +506,7 @@ static void MX_ADC1_Init(void)
 
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
   */
-  sConfig.Channel = ADC_CHANNEL_0;
+  sConfig.Channel = ADC_CHANNEL_1;
   sConfig.Rank = 1;
   sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
@@ -592,8 +592,8 @@ static void MX_RTC_Init(void)
 
   /** Initialize RTC and set the Time and Date
   */
-  sTime.Hours = 0x0;
-  sTime.Minutes = 0x0;
+  sTime.Hours = 0x12;
+  sTime.Minutes = 0x1;
   sTime.Seconds = 0x0;
   sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
   sTime.StoreOperation = RTC_STOREOPERATION_RESET;
@@ -602,8 +602,8 @@ static void MX_RTC_Init(void)
     Error_Handler();
   }
   sDate.WeekDay = RTC_WEEKDAY_WEDNESDAY;
-  sDate.Month = RTC_MONTH_MAY;
-  sDate.Date = 0x14;
+  sDate.Month = RTC_MONTH_JUNE;
+  sDate.Date = 0x19;
   sDate.Year = 0x25;
 
   if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BCD) != HAL_OK)
@@ -613,10 +613,7 @@ static void MX_RTC_Init(void)
 
   /** Enable the WakeUp
   */
-  if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 65535, RTC_WAKEUPCLOCK_CK_SPRE_16BITS) != HAL_OK)
-  {
-    Error_Handler();
-  }
+
   /* USER CODE BEGIN RTC_Init 2 */
 
   /* USER CODE END RTC_Init 2 */
@@ -837,10 +834,10 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_3|GPIO_PIN_10, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_0|GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_12, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_12, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1|GPIO_PIN_3|GPIO_PIN_10, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_10, GPIO_PIN_RESET);
@@ -854,8 +851,15 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PC0 PC1 PC3 PC10 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_3|GPIO_PIN_10;
+  /*Configure GPIO pins : PC0 PC12 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_12;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PC1 PC3 PC10 */
+  GPIO_InitStruct.Pin = GPIO_PIN_1|GPIO_PIN_3|GPIO_PIN_10;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -880,13 +884,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PC12 */
-  GPIO_InitStruct.Pin = GPIO_PIN_12;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pin : PB6 */
   GPIO_InitStruct.Pin = GPIO_PIN_6;
@@ -920,9 +917,17 @@ void vPortSuppressTicksAndSleep(TickType_t xExpectedIdleTime)
 {
     if (enterLowPower)
     {
+    	printf("Entering low power mode\n");
+
+		if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, sleep_time, RTC_WAKEUPCLOCK_CK_SPRE_16BITS) != HAL_OK)
+		{
+		Error_Handler();
+		}
+
 
         // Disable SysTick
-        SysTick->CTRL &= ~SysTick_CTRL_ENABLE_Msk;
+
+    	SysTick->CTRL &= ~SysTick_CTRL_TICKINT_Msk;
 
         // Enter critical section
         __disable_irq();
@@ -933,14 +938,19 @@ void vPortSuppressTicksAndSleep(TickType_t xExpectedIdleTime)
         // Enter Stop Mode
         HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
 
-        //TODO SET TO TRUE ENTER LOWPOWER MODE
+        //TODO
 
         // After wakeup: restore clock
         SystemClock_Config();
 
-        // Re-enable SysTick
-        SysTick->CTRL |= SysTick_CTRL_ENABLE_Msk;
 
+
+        // Re-enable SysTick
+        SysTick->CTRL  |= SysTick_CTRL_TICKINT_Msk;
+        printf("Exited low power mode\n");
+        HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
+        //HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 20, RTC_WAKEUPCLOCK_CK_SPRE_16BITS);
+        enterLowPower = false;
         // Exit critical section
         __enable_irq();
     }
