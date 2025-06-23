@@ -64,8 +64,6 @@ extern UART_HandleTypeDef huart2;
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
 
-I2C_HandleTypeDef hi2c1;
-
 RTC_HandleTypeDef hrtc;
 
 SPI_HandleTypeDef hspi1;
@@ -93,7 +91,6 @@ static void MX_TIM2_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_USART6_UART_Init(void);
 static void MX_SPI1_Init(void);
-static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
 static void TransmitTask_handle(void*parameter);
 static void MainTask_handle(void*parameter);
@@ -113,17 +110,20 @@ BaseType_t transmit;
 
 SemaphoreHandle_t xBinarySemaphore;
 
+//EA TASk
 int16_t Level_0 = 1000,Level_1 = 2000,Level_2 = 3000,Level_3 = 4000,Level_4 = 5000,Level_5 = 6000;
 
 char uart_buf[128];
-uint32_t  adc_raw_ph, adc_raw_do;
-uint32_t   ph_v, ph_cv, do_v, do_cv;
+//Sensor varaibles
+uint32_t  adc_raw_ph, adc_raw_do, ph_v, ph_cv, do_v, do_cv;;
+
 int16_t temp_scaled;
 int temp_v, temp_cv;
+
 uint16_t sleep_time = 30; // 1 hour in seconds //TODO change
 
 uint16_t Batt_raw;
-//todo
+
 void MainTask_handle(void*parameters)
 {
 
@@ -131,17 +131,17 @@ void MainTask_handle(void*parameters)
 	while(1)
 	{
         printf("Program Start \n");
-        //vTaskDelay(pdMS_TO_TICKS(3000));
+        vTaskDelay(pdMS_TO_TICKS(2000));
 
 
 
         //Turn 5V IO on Charge controller set as HIGH PC12
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_12, GPIO_PIN_SET);  // PC12: HIGH
-        vTaskDelay(pdMS_TO_TICKS(3000));
+        vTaskDelay(pdMS_TO_TICKS(2000));
 
         //Turn Pin LOW PC10
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_10, GPIO_PIN_RESET);  // PC10: LOW
-        vTaskDelay(pdMS_TO_TICKS(3000));
+        vTaskDelay(pdMS_TO_TICKS(2000));
 
 
         //Read ADC on PA0
@@ -152,7 +152,8 @@ void MainTask_handle(void*parameters)
 		});
 		HAL_ADC_Start(&hadc1);
 		HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
-		Batt_raw = HAL_ADC_GetValue(&hadc1);
+		//Batt_raw = HAL_ADC_GetValue(&hadc1); //TODO CHANGE
+		Batt_raw = 2000;
 
 		//INSERT TABLE BELOW
 		if (Batt_raw < Level_0 )// 0-10%
@@ -192,17 +193,17 @@ void MainTask_handle(void*parameters)
 			printf("PUMPING ON\n");
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);  // PC3: Pump ON
 
-			vTaskDelay(pdMS_TO_TICKS(6000));  // 90 seconds delay while ON
+			vTaskDelay(pdMS_TO_TICKS(3000));  // 90 seconds delay while ON
 
 
 			// Turn Pump OFF
-			printf("PUMP OFF, \n SENSORS ON\n");
+			printf("PUMP OFF, \nSENSORS ON\n");
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);  // PC3 Pump OFF
 
 			HAL_GPIO_WritePin(GPIOA, GPIO_PIN_10, GPIO_PIN_SET);   // PA10: Sensor ON
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_4, GPIO_PIN_SET);   // PC4: Sensor ON
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_SET);   // PC5: Sensor ON
-			vTaskDelay(pdMS_TO_TICKS(6000));  // 60 seconds delay while pump is OFF
+			vTaskDelay(pdMS_TO_TICKS(3000));  // 60 seconds delay while pump is OFF
 
 
 
@@ -386,7 +387,6 @@ int main(void)
   MX_USART6_UART_Init();
   MX_FATFS_Init();
   MX_SPI1_Init();
-  MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
 
   Mount_SD("/");
@@ -520,40 +520,6 @@ static void MX_ADC1_Init(void)
 }
 
 /**
-  * @brief I2C1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_I2C1_Init(void)
-{
-
-  /* USER CODE BEGIN I2C1_Init 0 */
-
-  /* USER CODE END I2C1_Init 0 */
-
-  /* USER CODE BEGIN I2C1_Init 1 */
-
-  /* USER CODE END I2C1_Init 1 */
-  hi2c1.Instance = I2C1;
-  hi2c1.Init.ClockSpeed = 100000;
-  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
-  hi2c1.Init.OwnAddress1 = 0;
-  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-  hi2c1.Init.OwnAddress2 = 0;
-  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN I2C1_Init 2 */
-
-  /* USER CODE END I2C1_Init 2 */
-
-}
-
-/**
   * @brief RTC Initialization Function
   * @param None
   * @retval None
@@ -613,7 +579,10 @@ static void MX_RTC_Init(void)
 
   /** Enable the WakeUp
   */
-
+  if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 20, RTC_WAKEUPCLOCK_CK_SPRE_16BITS) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE BEGIN RTC_Init 2 */
 
   /* USER CODE END RTC_Init 2 */
@@ -903,15 +872,9 @@ static void MX_GPIO_Init(void)
 void vApplicationIdleHook(void){
 		// This function is called when the system is idle
 	// You can use it to enter low power mode if needed
-	if (enterLowPower)
-	{
-		// Optionally, you can add code here to prepare for low power mode
-		// For example, disable peripherals or save state
-	}
-	else
-	{
+
 		// If not entering low power, just let the idle task run normally
-	}
+
 }
 void vPortSuppressTicksAndSleep(TickType_t xExpectedIdleTime)
 {
@@ -919,7 +882,7 @@ void vPortSuppressTicksAndSleep(TickType_t xExpectedIdleTime)
     {
     	printf("Entering low power mode\n");
 
-		if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, sleep_time, RTC_WAKEUPCLOCK_CK_SPRE_16BITS) != HAL_OK)
+		if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 10, RTC_WAKEUPCLOCK_CK_SPRE_16BITS) != HAL_OK)
 		{
 		Error_Handler();
 		}

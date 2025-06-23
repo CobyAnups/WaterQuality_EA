@@ -38,15 +38,15 @@ void Send_Uart (char *string)
 void Mount_SD (const TCHAR* path)
 {
 	fresult = f_mount(&fs, path, 1);
-	if (fresult != FR_OK) Send_Uart ("ERROR!!! in mounting SD CARD...\n\n");
-	else Send_Uart("SD CARD mounted successfully...\n");
+	if (fresult != FR_OK) Send_Uart ("ERROR!!! in mounting SD CARD...\r\n");
+	else Send_Uart("SD CARD mounted successfully...\r\n");
 }
 
 void Unmount_SD (const TCHAR* path)
 {
 	fresult = f_mount(NULL, path, 1);
-	if (fresult == FR_OK) Send_Uart ("SD CARD UNMOUNTED successfully...\n\n\n");
-	else Send_Uart("ERROR!!! in UNMOUNTING SD CARD\n\n\n");
+	if (fresult == FR_OK) Send_Uart ("SD CARD UNMOUNTED successfully...\r\n\n");
+	else Send_Uart("ERROR!!! in UNMOUNTING SD CARD\r\n\n");
 }
 
 /* Start node to be scanned (***also used as work area***) */
