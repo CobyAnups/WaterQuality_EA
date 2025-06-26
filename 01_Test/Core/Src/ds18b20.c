@@ -1,5 +1,11 @@
 #include "stm32f4xx.h"
 #include "stdio.h"
+#include "main.h"
+#include "FreeRTOS.h"
+#include "task.h"
+#include <stdint.h>
+#include <stdbool.h>
+#include "stm32f4xx_hal.h"
 
 #define DS18B20_PORT GPIOA
 #define DS18B20_PIN GPIO_PIN_4
@@ -45,7 +51,7 @@ uint8_t DS18B20_Start (void) {
 
 	if (!(HAL_GPIO_ReadPin (DS18B20_PORT, DS18B20_PIN))) Response = 1;    // if the pin is low i.e the presence pulse is detected
 		else Response = -1;
-		printf("DS18B20_Start: Response = %d\n", Response);
+		//printf("DS18B20_Start: Response = %d\n", Response);
 		delay(400); // 480 us delay totally.
 
 		return Response;
@@ -112,9 +118,7 @@ int16_t Temperature_Read(void)
 	DS18B20_Start();
 	DS18B20_Write(0xCC);  // Skip ROM
 	DS18B20_Write(0x44);  // Convert T
-//
-//	printf("Sent Convert T (0x44), releasing pin...\n");
-//	delay(750); // wait until conversion is complete (max 750ms at 12-bit)
+	vTaskDelay(pdMS_TO_TICKS( 750));  // wait for conversion to complete (750 ms for 12-bit resolution)
 
 	DS18B20_Start();
 	DS18B20_Write(0xCC);  // Skip ROM
@@ -135,6 +139,6 @@ int16_t Temperature_Read(void)
 
 	float temp_correct= (((Temperature - raw_low)*ref_range)/raw_range) + ref_low;
 
-	return (int16_t)(temp_correct * 100);
+	return temp_correct;
 }
 

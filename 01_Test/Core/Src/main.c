@@ -32,7 +32,7 @@
 #include "timers.h"
 
 #include <stdio.h>
-
+#include <math.h>
 #include <string.h>
 #include  <time.h>
 #include <inttypes.h>
@@ -113,13 +113,12 @@ SemaphoreHandle_t xBinarySemaphore;
 //EA TASk
 int16_t Level_0 = 1000,Level_1 = 2000,Level_2 = 3000,Level_3 = 4000,Level_4 = 5000,Level_5 = 6000;
 
-char uart_buf[128];
+char uart_buf[256];
 //Sensor varaibles
-uint32_t  adc_raw_ph, adc_raw_do, ph_v, ph_cv, do_v, do_cv;;
+uint32_t  adc_raw_ph, adc_raw_do, ph_v, ph_cv, do_v, do_cv;
 
-int16_t temp_scaled;
-int temp_v, temp_cv;
-
+float temp;
+float ph_scaled, do_scaled;
 uint16_t sleep_time = 30; // 1 hour in seconds //TODO change
 
 uint16_t Batt_raw;
@@ -139,12 +138,12 @@ void MainTask_handle(void*parameters)
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_12, GPIO_PIN_SET);  // PC12: HIGH
         vTaskDelay(pdMS_TO_TICKS(2000));
 
-        //Turn Pin LOW PC10
+        //Turn Pin LOW PC10  | EA GPIO RELAY MODULE
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_10, GPIO_PIN_RESET);  // PC10: LOW
         vTaskDelay(pdMS_TO_TICKS(2000));
 
 
-        //Read ADC on PA0
+        //Read ADC on PA0	|
 		HAL_ADC_ConfigChannel(&hadc1, &(ADC_ChannelConfTypeDef){
 		    .Channel = ADC_CHANNEL_0, //TODO Must be channel PC2
 		    .Rank = 1,
@@ -199,6 +198,8 @@ void MainTask_handle(void*parameters)
 			// Turn Pump OFF
 			printf("PUMP OFF, \nSENSORS ON\n");
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);  // PC3 Pump OFF
+			//relay off
+			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_12, GPIO_PIN_RESET);  // PC10: Relay OFF
 
 			HAL_GPIO_WritePin(GPIOA, GPIO_PIN_10, GPIO_PIN_SET);   // PA10: Sensor ON
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_4, GPIO_PIN_SET);   // PC4: Sensor ON
@@ -209,20 +210,33 @@ void MainTask_handle(void*parameters)
 
 			// Read Sensors
 			printf("GETTING DATA\n");
-			uint32_t count = __HAL_TIM_GET_COUNTER(&htim2);
-			printf("TIM2 Counter: %lu\n", count);
-	//		for (int i = 0; i < 5; ++i)
-	//		{
-			printf("reading temp");
+//			uint32_t count = __HAL_TIM_GET_COUNTER(&htim2);
+//			printf("TIM2 Counter: %lu\n", count);
+//		for (int i = 0; i < 5; ++i)
+//		{
+			printf("pH \n");
+			// ----------- pH (now on PB0 - ADC_CHANNEL_8) -----------
+			HAL_ADC_ConfigChannel(&hadc1, &(ADC_ChannelConfTypeDef){
+				.Channel = ADC_CHANNEL_8,
+				.Rank = 1,
+				.SamplingTime = ADC_SAMPLETIME_84CYCLES
+			});
+			HAL_ADC_Start(&hadc1);
+			HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
+			adc_raw_ph = HAL_ADC_GetValue(&hadc1);
+			//uint32_t ph_scaled = (adc_raw_ph * 330) / 4095;
+			ph_scaled = (adc_raw_ph );
+
+
+
+			printf("reading temp \n");
 
 			// ----------- Temp (DS18B20) -----------
 			//taskENTER_CRITICAL();
-			temp_scaled = Temperature_Read();  // 16x the real temperature
+			temp = Temperature_Read();  // 16x the real temperature
+
 			//taskEXIT_CRITICAL();
 
-			// Separate integer and fractional parts
-			temp_v = temp_scaled / 100;
-			temp_cv = temp_scaled % 100;
 
 
 			printf("DO \n");
@@ -235,23 +249,8 @@ void MainTask_handle(void*parameters)
 			HAL_ADC_Start(&hadc1);
 			HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
 			adc_raw_do = HAL_ADC_GetValue(&hadc1);
-			uint32_t do_scaled = (adc_raw_do * 330) / 4095;
-			do_v = do_scaled / 100;
-			do_cv = do_scaled % 100;
+			do_scaled = (adc_raw_do * 330) / 4095;
 
-			printf("pH \n");
-			// ----------- pH (now on PB0 - ADC_CHANNEL_8) -----------
-			HAL_ADC_ConfigChannel(&hadc1, &(ADC_ChannelConfTypeDef){
-				.Channel = ADC_CHANNEL_8,
-				.Rank = 1,
-				.SamplingTime = ADC_SAMPLETIME_84CYCLES
-			});
-			HAL_ADC_Start(&hadc1);
-			HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
-			adc_raw_ph = HAL_ADC_GetValue(&hadc1);
-			uint32_t ph_scaled = (adc_raw_ph * 330) / 4095;
-			ph_v = ph_scaled / 100;
-			ph_cv = ph_scaled % 100;
 
 
 
@@ -264,12 +263,15 @@ void MainTask_handle(void*parameters)
 
 			// --- Final UART Print with Timestamp ---
 			snprintf(uart_buf, sizeof(uart_buf),
-					 "[%04d-%02d-%02dT%02d:%02d:%02d] | Temp: %d.%02d°C, DO: %lu.%02luV, pH: %lu.%02luV\r\n",
-					 2000 + sDate.Year, sDate.Month, sDate.Date,
-					 sTime.Hours, sTime.Minutes, sTime.Seconds,
-					 temp_v, temp_cv,
-					 do_v, do_cv,
-					 ph_v, ph_cv);
+			         "id:%04d, type:1, time:%04d-%02d-%02dT%02d:%02d:%02d.000Z, temp:%.2f, ph:%.2f, do:%.2f, batt:%u\r\n",
+			         0, // id, change as needed
+			         2000 + sDate.Year, sDate.Month, sDate.Date,
+			         sTime.Hours, sTime.Minutes, sTime.Seconds,
+			         temp,
+			         ph_scaled,
+			         do_scaled,
+			         Batt_raw); // Add your battery value here
+
 
 
 			/*// Formatted code below
@@ -283,14 +285,15 @@ void MainTask_handle(void*parameters)
 			 */
 
 			HAL_UART_Transmit(&huart2, (uint8_t *)uart_buf, strlen(uart_buf), HAL_MAX_DELAY);
+			printf("UART Transmitted");
 			xSemaphoreGive(xBinarySemaphore);
-			vTaskDelay(3000 / portTICK_PERIOD_MS); // 1 second between each reading
-	//		}
+			vTaskDelay(1000 / portTICK_PERIOD_MS); // 1 second between each reading
+//		}
 
 			printf("SENSORS OFF\n");
-			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_0, GPIO_PIN_RESET);   // PC0: Sensor OFF
-			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_RESET);   // PC1: Sensor OFF
-			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);   // PC3: Sensor OFF
+			HAL_GPIO_WritePin(GPIOA, GPIO_PIN_10, GPIO_PIN_RESET);   // PA10: Sensor ON
+			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_4, GPIO_PIN_RESET);   // PC4: Sensor ON
+			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_RESET);   // PC5: Sensor ON
 			printf("5 sec delay then continue to Dispose\n");
 			vTaskDelay(pdMS_TO_TICKS(5000));// Wait 5 seconds before repeating the 5-set loop
 
@@ -301,21 +304,21 @@ void MainTask_handle(void*parameters)
 
 
 			printf("Dispose \n ");
-			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_4, GPIO_PIN_RESET);  // PC4: Pump ON
+			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_RESET);  // PC1: Pump ON
 			vTaskDelay(pdMS_TO_TICKS(3000));
 
 			printf("StopClean \n");
-			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_SET);  // PC4: Pump OFF
+			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_SET);  // PC1: Pump OFF
 			vTaskDelay(pdMS_TO_TICKS(3000));
 
 			printf("Cleaning \n");
-			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_RESET);  // PC4: Pump ON
+			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_0, GPIO_PIN_RESET);  // PC0: Pump ON
 			vTaskDelay(pdMS_TO_TICKS(3000));
 
 
 
 			printf("StopDispose \n");
-			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_4, GPIO_PIN_SET);  // PC4: Pump OFF
+			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_0, GPIO_PIN_SET);  // PC0: Pump OFF
 
 			printf("entering low power \n");
 			enterLowPower = true;
@@ -395,6 +398,7 @@ int main(void)
   Unmount_SD("/");
 
   xBinarySemaphore = xSemaphoreCreateBinary();
+  configASSERT(xBinarySemaphore != NULL);
   HAL_TIM_Base_Start(&htim2); // Timer for Temp
 
   HAL_TIM_Base_Start(&htim1); // periodic delay timer for SD Card
@@ -489,7 +493,7 @@ static void MX_ADC1_Init(void)
   */
   hadc1.Instance = ADC1;
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV2;
-  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.Resolution = ADC_RESOLUTION_10B;
   hadc1.Init.ScanConvMode = DISABLE;
   hadc1.Init.ContinuousConvMode = DISABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
@@ -803,16 +807,22 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_0|GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_12, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, Pump3_Pin|EA_Relay_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1|GPIO_PIN_3|GPIO_PIN_10, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOC, pH_VCC_Pin|temp_VCC_Pin|IO_5v_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_10, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(Pump2_GPIO_Port, Pump2_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(Pump2B7_GPIO_Port, Pump2B7_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
@@ -820,28 +830,21 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PC0 PC12 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_12;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PC1 PC3 PC10 */
-  GPIO_InitStruct.Pin = GPIO_PIN_1|GPIO_PIN_3|GPIO_PIN_10;
+  /*Configure GPIO pins : Pump3_Pin EA_Relay_Pin */
+  GPIO_InitStruct.Pin = Pump3_Pin|EA_Relay_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PA4 */
-  GPIO_InitStruct.Pin = GPIO_PIN_4;
+  /*Configure GPIO pin : Temp_Pin */
+  GPIO_InitStruct.Pin = Temp_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  HAL_GPIO_Init(Temp_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PC4 PC5 */
-  GPIO_InitStruct.Pin = GPIO_PIN_4|GPIO_PIN_5;
+  /*Configure GPIO pins : pH_VCC_Pin temp_VCC_Pin */
+  GPIO_InitStruct.Pin = pH_VCC_Pin|temp_VCC_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -854,12 +857,33 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : Pump2_Pin */
+  GPIO_InitStruct.Pin = Pump2_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(Pump2_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : IO_5v_Pin */
+  GPIO_InitStruct.Pin = IO_5v_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(IO_5v_GPIO_Port, &GPIO_InitStruct);
+
   /*Configure GPIO pin : PB6 */
   GPIO_InitStruct.Pin = GPIO_PIN_6;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : Pump2B7_Pin */
+  GPIO_InitStruct.Pin = Pump2B7_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(Pump2B7_GPIO_Port, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
