@@ -113,7 +113,7 @@ SemaphoreHandle_t xBinarySemaphore;
 //EA TASk
 int16_t Level_0 = 1000,Level_1 = 2000,Level_2 = 3000,Level_3 = 4000,Level_4 = 5000,Level_5 = 6000;
 
-char uart_buf[256];
+char uart_buf[128];
 //Sensor varaibles
 uint32_t  adc_raw_ph, adc_raw_do, ph_v, ph_cv, do_v, do_cv;
 
@@ -249,7 +249,7 @@ void MainTask_handle(void*parameters)
 			HAL_ADC_Start(&hadc1);
 			HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
 			adc_raw_do = HAL_ADC_GetValue(&hadc1);
-			do_scaled = (adc_raw_do * 330) / 4095;
+			do_scaled = (adc_raw_do);
 
 
 
@@ -263,14 +263,14 @@ void MainTask_handle(void*parameters)
 
 			// --- Final UART Print with Timestamp ---
 			snprintf(uart_buf, sizeof(uart_buf),
-			         "id:%04d, type:1, time:%04d-%02d-%02dT%02d:%02d:%02d.000Z, temp:%.2f, ph:%.2f, do:%.2f, batt:%u\r\n",
-			         0, // id, change as needed
+			         "id:0000, type:1, time:%04d-%02d-%02dT%02d:%02d:%02d.000Z, temp:%.2f, ph:%.2f, do:%.2fbatt:%u\r\n",
+			          // id, change as needed
 			         2000 + sDate.Year, sDate.Month, sDate.Date,
 			         sTime.Hours, sTime.Minutes, sTime.Seconds,
 			         temp,
 			         ph_scaled,
 			         do_scaled,
-			         Batt_raw); // Add your battery value here
+					 Batt_raw); // Add your battery value here
 
 
 
@@ -283,10 +283,10 @@ void MainTask_handle(void*parameters)
 				 do_v, do_cv,
 				 bat_v);  // <-- make sure you define and calculate bat_v earlier
 			 */
-
+			xSemaphoreGive(xBinarySemaphore);
 			HAL_UART_Transmit(&huart2, (uint8_t *)uart_buf, strlen(uart_buf), HAL_MAX_DELAY);
 			printf("UART Transmitted");
-			xSemaphoreGive(xBinarySemaphore);
+
 			vTaskDelay(1000 / portTICK_PERIOD_MS); // 1 second between each reading
 //		}
 
@@ -332,10 +332,9 @@ void TransmitTask_handle(void* parameters) //todo transmit task
 
     while (1)
     {
-
     	if (xSemaphoreTake(xBinarySemaphore, portMAX_DELAY) == pdTRUE) {
 
-    		printf("Transmit Task Running\n");
+    		printf("Upload to SD Card Task Running\n");
 
 
 			Mount_SD("/");
@@ -397,8 +396,7 @@ int main(void)
   Create_File("LOGS.TXT");
   Unmount_SD("/");
 
-  xBinarySemaphore = xSemaphoreCreateBinary();
-  configASSERT(xBinarySemaphore != NULL);
+
   HAL_TIM_Base_Start(&htim2); // Timer for Temp
 
   HAL_TIM_Base_Start(&htim1); // periodic delay timer for SD Card
@@ -408,7 +406,8 @@ int main(void)
 
   transmit = xTaskCreate(TransmitTask_handle, "Transmit-Task", 200, "Hello from Transmit ", 1,  &xTransmitTask);
   configASSERT(transmit == pdPASS);
-
+  xBinarySemaphore = xSemaphoreCreateBinary();
+  configASSERT(xBinarySemaphore != NULL);
 
   vTaskStartScheduler();
   /* USER CODE END 2 */
@@ -904,7 +903,7 @@ void vPortSuppressTicksAndSleep(TickType_t xExpectedIdleTime)
 {
     if (enterLowPower)
     {
-    	printf("Entering low power mode\n");
+    	printf("Entered low power mode\n");
 
 		if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 10, RTC_WAKEUPCLOCK_CK_SPRE_16BITS) != HAL_OK)
 		{
