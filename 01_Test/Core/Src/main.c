@@ -304,21 +304,21 @@ void MainTask_handle(void*parameters)
 
 
 			printf("Dispose \n ");
-			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_RESET);  // PC1: Pump ON
+			HAL_GPIO_WritePin(GPIOA, GPIO_PIN_15, GPIO_PIN_RESET);  // PA15: Pump ON
 			vTaskDelay(pdMS_TO_TICKS(3000));
 
 			printf("StopClean \n");
-			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_SET);  // PC1: Pump OFF
+			HAL_GPIO_WritePin(GPIOA, GPIO_PIN_15, GPIO_PIN_SET);  // PA15: Pump OFF
 			vTaskDelay(pdMS_TO_TICKS(3000));
 
 			printf("Cleaning \n");
-			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_0, GPIO_PIN_RESET);  // PC0: Pump ON
+			HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_RESET);  // PC0: Pump ON
 			vTaskDelay(pdMS_TO_TICKS(3000));
 
 
 
 			printf("StopDispose \n");
-			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_0, GPIO_PIN_SET);  // PC0: Pump OFF
+			HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_SET);  // PC0: Pump OFF
 
 			printf("entering low power \n");
 			enterLowPower = true;
@@ -435,8 +435,8 @@ void SystemClock_Config(void)
   /** Configure the main internal regulator output voltage
   */
   __HAL_RCC_PWR_CLK_ENABLE();
-  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
-
+  //__HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+  HAL_PWR_EnableBkUpAccess();
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
@@ -538,7 +538,8 @@ static void MX_RTC_Init(void)
   RTC_DateTypeDef sDate = {0};
 
   /* USER CODE BEGIN RTC_Init 1 */
-
+  __HAL_RCC_PWR_CLK_ENABLE(); // Enable power interface clock
+  HAL_PWR_EnableBkUpAccess();
   /* USER CODE END RTC_Init 1 */
 
   /** Initialize RTC Only
@@ -556,24 +557,47 @@ static void MX_RTC_Init(void)
   }
 
   /* USER CODE BEGIN Check_RTC_BKUP */
+  if (HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR0) != 0x32F2)
+   {
+     // First-time setup: set default time & date
+     sTime.Hours = 12;
+     sTime.Minutes = 1;
+     sTime.Seconds = 0;
+     sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
+     sTime.StoreOperation = RTC_STOREOPERATION_RESET;
 
+     sDate.WeekDay = RTC_WEEKDAY_WEDNESDAY;
+     sDate.Month = RTC_MONTH_JUNE;
+     sDate.Date = 19;
+     sDate.Year = 25;
+
+     if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BIN) != HAL_OK)
+     {
+       Error_Handler();
+     }
+
+     if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BIN) != HAL_OK)
+     {
+       Error_Handler();
+     }
+
+     HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, 0x32F2);
+   }
+   else
+   {
+     // Already initialized; just read existing values
+     HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+     HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+   }
   /* USER CODE END Check_RTC_BKUP */
 
   /** Initialize RTC and set the Time and Date
   */
-  sTime.Hours = 0x12;
-  sTime.Minutes = 0x1;
-  sTime.Seconds = 0x0;
-  sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
-  sTime.StoreOperation = RTC_STOREOPERATION_RESET;
+
   if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BCD) != HAL_OK)
   {
     Error_Handler();
   }
-  sDate.WeekDay = RTC_WEEKDAY_WEDNESDAY;
-  sDate.Month = RTC_MONTH_JUNE;
-  sDate.Date = 0x19;
-  sDate.Year = 0x25;
 
   if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BCD) != HAL_OK)
   {
