@@ -392,7 +392,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
 
   Mount_SD("/");
-  Format_SD();
+  //Format_SD();
   Create_File("LOGS.TXT");
   Unmount_SD("/");
 
@@ -406,6 +406,9 @@ int main(void)
 
   transmit = xTaskCreate(TransmitTask_handle, "Transmit-Task", 200, "Hello from Transmit ", 1,  &xTransmitTask);
   configASSERT(transmit == pdPASS);
+
+
+
   xBinarySemaphore = xSemaphoreCreateBinary();
   configASSERT(xBinarySemaphore != NULL);
 
@@ -435,7 +438,7 @@ void SystemClock_Config(void)
   /** Configure the main internal regulator output voltage
   */
   __HAL_RCC_PWR_CLK_ENABLE();
-  //__HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
   HAL_PWR_EnableBkUpAccess();
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
