@@ -43,10 +43,11 @@
 	#include <inttypes.h>
 	#include <math.h>
 	#include <time.h>
-
+	#include <stdlib.h>
 
 	extern ADC_HandleTypeDef hadc1;
 	extern UART_HandleTypeDef huart2;
+	extern UART_HandleTypeDef huart1;
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -61,7 +62,7 @@
 
 	#define PUMP1        			GPIOC, GPIO_PIN_3
 	#define PUMP2       			GPIOA, GPIO_PIN_15
-	#define PUMP3         			GPIOB, GPIO_PIN_7
+	//#define PUMP3         			GPIOB, GPIO_PIN_7
 	#define pH_POWER     			GPIOC, GPIO_PIN_4
 	#define Temp_POWER      		GPIOC, GPIO_PIN_5
 
@@ -72,6 +73,28 @@
 	#define PUMP2_DURATION     		3000
 	#define PUMP3_DURATION        	3000
 
+	#define BKP_REG_SYNC_FLAG RTC_BKP_DR1
+	#define RTC_SYNC_MAGIC    0x32F2  // Arbitrary unique value
+
+	#define MAX_RETRIES 5
+	#define ACK_TIMEOUT_MS 60000  // 1 minute
+	#define ACK_BUFFER_SIZE 100
+
+	// EA Threshold Levels (can be tuned or loaded from config later)
+	#define LEVEL_0 1000
+	#define LEVEL_1 2000
+	#define LEVEL_2 3000
+	#define LEVEL_3 4000
+	#define LEVEL_4 5000
+	#define LEVEL_5 6000
+
+	// GPIO Pins for RTC Wakeup
+	#define RTC_WAKEUP_PIN GPIO_PIN_13
+	#define RTC_WAKEUP_GPIO GPIOC
+
+
+	#define MAX_RETRIES 3
+	#define ACK_TIMEOUT_MS 60000  // 1 minute
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -89,20 +112,20 @@ SPI_HandleTypeDef hspi1;
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 
+UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart6;
 
 /* USER CODE BEGIN PV */
 	/* RTOS Task Handles */
 	TaskHandle_t xMainTask;
-
 	TaskHandle_t xRtcUpdateHandle;
-
+	TaskHandle_t xBoot;
 	/* RTOS Synchronization Objects */
 
 	SemaphoreHandle_t xLowPowerSemaphore;
 	SemaphoreHandle_t xRtcUpdateSemaphore;
-
+	SemaphoreHandle_t xAckSemaphore;
 	/* Sensor Data (Raw + Processed) */
 	uint32_t adc_raw_ph = 0, adc_raw_do = 0;
 	uint32_t ph_v = 0, ph_cv = 0;
@@ -122,13 +145,18 @@ UART_HandleTypeDef huart6;
 	int16_t Level_3 = 4000, Level_4 = 5000, Level_5 = 6000;
 
 	/* UART RX Variables */
+	char gps_buffer[256] = {0};  // Buffer for GPS data
 	char uart_rx_buffer[UART_BUFFER_SIZE] = {0};
 	char uart_rx_char = 0;
 	uint16_t uart_rx_index = 0;
 	uint8_t newline_count = 0;
 	char uart_buf[128] = {0};  // General TX buffer (printf, debug)
+	volatile bool uartWakeupFlag = false;
 
 	uint32_t Read_ADC_Channel(uint32_t channel);
+	bool ack_received = false;
+	char ack_buf[ACK_BUFFER_SIZE] = {0};
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -141,40 +169,32 @@ static void MX_TIM2_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_USART6_UART_Init(void);
+static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
-
+	static void ParseGPSAndSetRTC(void);
 	static void MainTask_handle(void*parameters);
-	static void RTC_Update_Task(void* parameters);
+	static void RP1_UART_Handler_Task(void* parameters);
 
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-	//This is where tasks are then created and started
-
-
 	void MainTask_handle(void*parameters)
 	{
-
-
 		while(1)
 		{
 			printf("Program Start \n");
 			vTaskDelay(pdMS_TO_TICKS(2000));
 
-
-
 			//Turn Pin LOW PC10  | EA GPIO RELAY MODULE
 			HAL_GPIO_WritePin(EA_RELAY_GPIO , GPIO_PIN_RESET);  // PC10: LOW
 			vTaskDelay(pdMS_TO_TICKS(2000));
 
-
 			//Read ADC on PA0	|
 
-			//Batt_raw = Read_ADC_Channel(ADC_CHANNEL_0);; //TODO CHANGE
+			//Batt_raw = Read_ADC_Channel(ADC_CHANNEL_0); //TODO CHANGE
 			Batt_raw = 2000;
-
 			HAL_GPIO_WritePin(EA_RELAY_GPIO , GPIO_PIN_SET);
 
 
@@ -256,10 +276,10 @@ static void MX_USART6_UART_Init(void);
 				// --- Get RTC Time & Date ---
 				RTC_TimeTypeDef sTime;
 				RTC_DateTypeDef sDate;
-				printf("Before RTC get\n");
+
 				HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
 				HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
-				printf("After RTC date get\n");
+
 
 
 				// --- Final UART Print with Timestamp ---
@@ -313,13 +333,13 @@ static void MX_USART6_UART_Init(void);
 				vTaskDelay(pdMS_TO_TICKS(3000));
 
 				printf("Cleaning \n");
-				HAL_GPIO_WritePin(PUMP3, GPIO_PIN_RESET);  // PC0: Pump ON
+				//HAL_GPIO_WritePin(PUMP3, GPIO_PIN_RESET);  // PB7: Pump ON
 				vTaskDelay(pdMS_TO_TICKS(3000));
 
 
 
 				printf("StopDispose \n");
-				HAL_GPIO_WritePin(PUMP3, GPIO_PIN_SET);  // PC0: Pump OFF
+				//HAL_GPIO_WritePin(PUMP3, GPIO_PIN_SET);  // PB7: Pump OFF
 				HAL_GPIO_WritePin(PUMP1, GPIO_PIN_RESET);
 				printf("entering low power \n");
 				xSemaphoreGive(xLowPowerSemaphore); // Signal low power mode
@@ -328,69 +348,198 @@ static void MX_USART6_UART_Init(void);
 		}
 	}
 
-
-
-	void RTC_Update_Task(void *argument) {
-		RTC_TimeTypeDef sTime = {0};
-		RTC_DateTypeDef sDate = {0};
-
-		char datetime_buffer[UART_BUFFER_SIZE];
-		int year, month, day, hour, minute, second;
+	void RP1_UART_Handler_Task(void *argument) {
+		char rx_buffer[UART_BUFFER_SIZE];
+		int msg_type = 0;
+		int retransmit_index = -1;
 
 		for (;;) {
-
 			if (xSemaphoreTake(xRtcUpdateSemaphore, portMAX_DELAY) == pdTRUE) {
-				printf("RTC update task triggered\n");
-
 				// Copy and null-terminate buffer
-				strncpy(datetime_buffer, uart_rx_buffer, UART_BUFFER_SIZE);
-				datetime_buffer[UART_BUFFER_SIZE - 1] = '\0';
+				strncpy(rx_buffer, uart_rx_buffer, UART_BUFFER_SIZE);
+				rx_buffer[UART_BUFFER_SIZE - 1] = '\0';
 
-				// Look for first colon (:) and treat the rest as the timestamp
-				char *timestamp_str = strchr(datetime_buffer, ':');
-				if (timestamp_str != NULL) {
-					timestamp_str++; // Move past ':'
-					while (*timestamp_str == ' ') timestamp_str++; // Skip whitespace
+				// Expected format: RP1: type: X [index]
+				if (strstr(rx_buffer, "RP1:") != NULL) {
+					sscanf(rx_buffer, "RP1: type: %d", &msg_type);
+
+					switch (msg_type) {
+						case 1:
+							printf("[RP1 Handler] Acknowledgement received (type 1)\n");
+							// Optionally notify another task
+							break;
+
+						case 2:
+							if (sscanf(rx_buffer, "RP1: type: 2 %d", &retransmit_index) == 2 &&
+								retransmit_index >= 1 && retransmit_index <= 5) {
+								printf("[RP1 Handler] Retransmit requested for index %d\n", retransmit_index);
+								// TODO: Send retransmission using index
+							} else {
+								printf("[RP1 Handler] Invalid retransmit request: %s\n", rx_buffer);
+							}
+							break;
+
+						case 3:
+							printf("[RP1 Handler] Data request while in StopMode (type 3)\n");
+							// Give semaphore to force MainTask to run
+							xSemaphoreGiveFromISR(xLowPowerSemaphore, NULL);
+							break;
+
+						default:
+							printf("[RP1 Handler] Unknown type: %d\n", msg_type);
+							break;
+					}
 				} else {
-					timestamp_str = datetime_buffer; // fallback
+					printf("[RP1 Handler] Invalid format: %s\n", rx_buffer);
 				}
 
-				// Parse timestamp
-				if (sscanf(timestamp_str, "%d-%d-%d %d:%d:%d", &year, &month, &day, &hour, &minute, &second) == 6) {
-					sTime.Hours = hour;
-					sTime.Minutes = minute;
-					sTime.Seconds = second;
-					sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
-					sTime.StoreOperation = RTC_STOREOPERATION_RESET;
-
-					sDate.Year = year;
-					sDate.Month = month;
-					sDate.Date = day;
-
-
-					if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BIN) != HAL_OK) {
-						printf("RTC time set failed\n");
-					}
-					if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BIN) != HAL_OK) {
-						printf("RTC date set failed\n");
-					}
-
-					printf("RTC updated to: %04d-%02d-%02d %02d:%02d:%02d\n",
-						   year, month, day, hour, minute, second);
-				} else {
-					printf("Invalid date/time format received: %s\n", timestamp_str);
-				}
-
-				// Clear buffer and reset UART state
+				// Clear state
 				memset(uart_rx_buffer, 0, UART_BUFFER_SIZE);
 				uart_rx_index = 0;
 				newline_count = 0;
 
 				HAL_UART_Receive_IT(&huart6, (uint8_t*)&uart_rx_char, 1);
-			} else {
-
 			}
 		}
+	}
+	void ParseGPSAndSetRTC(void) {
+	    char *token;
+	    RTC_TimeTypeDef sTime = {0};
+	    RTC_DateTypeDef sDate = {0};
+	    printf("Parsing GPS data to set RTC...\n");
+
+	    uint32_t startTick = HAL_GetTick();
+	    uint32_t timeout_ms = 5000;  // 5 seconds
+	    uint16_t gps_index = 0;
+	    gps_buffer[0] = '\0';
+
+	    // Step 1: Read character-by-character with timeout
+
+	    while ((HAL_GetTick() - startTick) < timeout_ms && gps_index < sizeof(gps_buffer) - 1) {
+	        uint8_t byte;
+	        HAL_StatusTypeDef status = HAL_UART_Receive(&huart1, &byte, 1, 50); // Short timeout
+
+	        if (status == HAL_OK) {
+	            gps_buffer[gps_index++] = byte;
+
+	            // Optional: Echo received byte
+	            //printf("%d",byte);
+
+	            if (byte == '\n') break;  // End of NMEA sentence
+	        } else if (status == HAL_TIMEOUT) {
+	            // Optional: print '.' or tick to show we’re still waiting
+	            printf('.');
+	        } else {
+	            printf("UART Receive error: %d\n", status);
+	            break;
+	        }
+	    }
+
+	    gps_buffer[gps_index] = '\0';
+
+	    if (gps_index == 0) {
+	        printf("Timeout: No GPS data received.\n");
+	        return;
+	    }
+
+	    printf("Received GPS data: %s\n", gps_buffer);
+
+	    // Step 2: Find the $GPRMC sentence
+	    char *rmc_ptr = strstr(gps_buffer, "$GPRMC");
+	    if (!rmc_ptr) {
+	        printf("No GPRMC sentence found\n");
+	        return;
+	    }
+
+	    // Step 3: Tokenize the sentence
+	    token = strtok(rmc_ptr, ","); // $GPRMC
+	    token = strtok(NULL, ",");    // Time
+	    if (token && strlen(token) >= 6) {
+	        char hour_str[3] = {token[0], token[1], '\0'};
+	        char min_str[3] = {token[2], token[3], '\0'};
+	        char sec_str[3] = {token[4], token[5], '\0'};
+	        sTime.Hours = atoi(hour_str);
+	        sTime.Minutes = atoi(min_str);
+	        sTime.Seconds = atoi(sec_str);
+	        sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
+	        sTime.StoreOperation = RTC_STOREOPERATION_RESET;
+	    }
+
+	    // Skip next fields until date
+	    for (int i = 0; i < 8; i++) token = strtok(NULL, ",");
+
+	    if (token && strlen(token) == 6) {
+	        char day_str[3] = {token[0], token[1], '\0'};
+	        char month_str[3] = {token[2], token[3], '\0'};
+	        char year_str[3] = {token[4], token[5], '\0'};
+	        sDate.Date = atoi(day_str);
+	        sDate.Month = atoi(month_str);
+	        sDate.Year = atoi(year_str); // RTC supports 0–99 for 2000–2099
+	    }
+
+	    if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BIN) == HAL_OK &&
+	        HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BIN) == HAL_OK) {
+
+	        HAL_RTCEx_BKUPWrite(&hrtc, BKP_REG_SYNC_FLAG, RTC_SYNC_MAGIC);  // Save sync flag
+	        printf("RTC set from GPS and sync flag saved.\n");
+	    } else {
+	        printf("Failed to set RTC from GPS.\n");
+	    }
+
+	    printf("RTC initialized to GPS time: %02d:%02d:%02d %02d/%02d/%02d\n",
+	           sTime.Hours, sTime.Minutes, sTime.Seconds,
+	           sDate.Date, sDate.Month, sDate.Year);
+	}
+	void BootTask(void *params) {
+		ParseGPSAndSetRTC();
+		Batt_raw = Read_ADC_Channel(ADC_CHANNEL_0); // Read battery voltage from ADC channel 0
+		if (Batt_raw < Level_0 ) {// 0-10%
+			printf("Battery Level: 0-10%%\n");
+			//todo UART Transmit Low battery %d Batt_raw
+			sleep_time = 30; // 30 seconds in seconds
+
+		}
+		else if (Batt_raw < Level_1) {// 10-20%
+			sleep_time = 60; // 6 hours in seconds
+
+			printf("Battery Level: 10-20%%\n");
+
+		}else if (Batt_raw < Level_2) {
+			//set wakeup timer to Every 4 hours
+			sleep_time = 14400; // 4 hours in seconds
+			printf("Battery Level: 20-30%%\n");
+
+		}else if (Batt_raw < Level_3) {
+			//set wakeup timer to Every 2 hours
+			sleep_time = 7200; // 2 hours in seconds
+			printf("Battery Level: 30-40%%\n");
+
+		}else {
+			//set wakeup timer to Every 1 hour
+			sleep_time = 3600; // 1 hour in seconds
+			printf("Battery Level: 40-50%%\n");
+			}
+		//Transmit the Wakeuptime via UART6
+		snprintf(uart_buf, sizeof(uart_buf), "Wakeup Time: %d seconds\r\n", sleep_time);
+		HAL_UART_Transmit(&huart6, (uint8_t *)uart_buf, strlen(uart_buf), HAL_MAX_DELAY);
+	    for (int attempt = 0; attempt < 3; ++attempt) {
+
+
+	        if (xSemaphoreTake(xAckSemaphore, pdMS_TO_TICKS(60000)) == pdTRUE) {
+	            printf("ACK received.\n");
+	            break; // successful
+	        } else {
+	            printf("No ACK, retrying...\n");
+	        }
+	    }
+
+	    // Continue regardless of ACK status
+		  xTaskCreate(MainTask_handle, "Main-Task", 1000, NULL, 1,  &xMainTask);
+		  configASSERT(xMainTask != NULL);
+
+		  xTaskCreate(RP1_UART_Handler_Task, "RP1_UART_Handler", 512, NULL, 5, &xRtcUpdateHandle);
+		  configASSERT(xRtcUpdateHandle != NULL);
+		  vTaskDelete(NULL); // delete BootTask
 	}
 
 /* USER CODE END 0 */
@@ -432,24 +581,19 @@ int main(void)
   MX_FATFS_Init();
   MX_SPI1_Init();
   MX_USART6_UART_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-    HAL_NVIC_SetPriority(USART6_IRQn, 5, 0); // Set USART6 interrupt priority
-	HAL_NVIC_EnableIRQ(USART6_IRQn);
-	  Mount_SD("/");
-	  Format_SD();
-	  Create_File("LOGS.TXT");
-	  Unmount_SD("/");
-
-
+//    HAL_NVIC_SetPriority(USART6_IRQn, 5, 0); // Set USART6 interrupt priority
+//	HAL_NVIC_EnableIRQ(USART6_IRQn);
+//	  Mount_SD("/");
+//	  Format_SD();
+//	  Create_File("LOGS.TXT");
+//	  Unmount_SD("/");
 	  HAL_TIM_Base_Start(&htim2); // Timer for Temp
-
 	  HAL_TIM_Base_Start(&htim1); // periodic delay timer for SD Card
-	  HAL_UART_Receive_IT(&huart6, (uint8_t*)&uart_rx_char, 1);
-	  xTaskCreate(MainTask_handle, "Main-Task", 1000, NULL, 1,  &xMainTask);
 
-
-	  xTaskCreate(RTC_Update_Task, "RTC_Update", 512, NULL, 5, &xRtcUpdateHandle);
-
+	  xTaskCreate(BootTask, "Boot", 1024, NULL, 3, &xBoot); // Priority 3
+	  configASSERT(BootTask != NULL);
 
 
 	  // Create binary semaphore for UART transmission
@@ -457,7 +601,8 @@ int main(void)
 	  configASSERT(xLowPowerSemaphore != NULL);
 	  xRtcUpdateSemaphore = xSemaphoreCreateBinary();
 	  configASSERT(xRtcUpdateSemaphore != NULL);
-
+	  xAckSemaphore = xSemaphoreCreateBinary();
+	  configASSERT(xAckSemaphore != NULL);
 	  vTaskStartScheduler();
   /* USER CODE END 2 */
 
@@ -587,8 +732,8 @@ static void MX_RTC_Init(void)
   RTC_DateTypeDef sDate = {0};
 
   /* USER CODE BEGIN RTC_Init 1 */
-	  __HAL_RCC_PWR_CLK_ENABLE(); // Enable power interface clock
-	  HAL_PWR_EnableBkUpAccess();
+  __HAL_RCC_PWR_CLK_ENABLE(); // Enable power interface clock
+  HAL_PWR_EnableBkUpAccess();
   /* USER CODE END RTC_Init 1 */
 
   /** Initialize RTC Only
@@ -606,38 +751,38 @@ static void MX_RTC_Init(void)
   }
 
   /* USER CODE BEGIN Check_RTC_BKUP */
-	  if (HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR0) != 0x32F2)
-	   {
-		 // First-time setup: set default time & date
-		 sTime.Hours = 12;
-		 sTime.Minutes = 1;
-		 sTime.Seconds = 0;
-		 sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
-		 sTime.StoreOperation = RTC_STOREOPERATION_RESET;
-
-		 sDate.WeekDay = RTC_WEEKDAY_WEDNESDAY;
-		 sDate.Month = RTC_MONTH_JUNE;
-		 sDate.Date = 19;
-		 sDate.Year = 25;
-
-		 if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BIN) != HAL_OK)
-		 {
-		   Error_Handler();
-		 }
-
-		 if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BIN) != HAL_OK)
-		 {
-		   Error_Handler();
-		 }
-
-		 HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, 0x32F2);
-	   }
-	   else
-	   {
-		 // Already initialized; just read existing values
-		 HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
-		 HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
-	   }
+//	  if (HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR0) != 0x32F2)
+//	   {
+//		 // First-time setup: set default time & date
+//		 sTime.Hours = 12;
+//		 sTime.Minutes = 1;
+//		 sTime.Seconds = 0;
+//		 sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
+//		 sTime.StoreOperation = RTC_STOREOPERATION_RESET;
+//
+//		 sDate.WeekDay = RTC_WEEKDAY_WEDNESDAY;
+//		 sDate.Month = RTC_MONTH_JUNE;
+//		 sDate.Date = 19;
+//		 sDate.Year = 25;
+//
+//		 if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BIN) != HAL_OK)
+//		 {
+//		   Error_Handler();
+//		 }
+//
+//		 if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BIN) != HAL_OK)
+//		 {
+//		   Error_Handler();
+//		 }
+//
+//		 HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, 0x32F2);
+//	   }
+//	   else
+//	   {
+//		 // Already initialized; just read existing values
+//		 HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+//		 HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+//	   }
   /* USER CODE END Check_RTC_BKUP */
 
   /** Initialize RTC and set the Time and Date
@@ -803,6 +948,39 @@ static void MX_TIM2_Init(void)
 }
 
 /**
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART1_Init 0 */
+
+  /* USER CODE END USART1_Init 0 */
+
+  /* USER CODE BEGIN USART1_Init 1 */
+
+  /* USER CODE END USART1_Init 1 */
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 9600;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART1_Init 2 */
+
+  /* USER CODE END USART1_Init 2 */
+
+}
+
+/**
   * @brief USART2 Initialization Function
   * @param None
   * @retval None
@@ -902,9 +1080,6 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_SET);
-
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
@@ -959,15 +1134,24 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PB7 */
-  GPIO_InitStruct.Pin = GPIO_PIN_7;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 //TODO
+  // USART6_RX = PC7
+  GPIO_InitStruct.Pin = GPIO_PIN_7;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;     // Alternate Function Push-Pull
+  GPIO_InitStruct.Pull = GPIO_PULLUP;         // Needed to ensure falling edge on idle->start bit
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  GPIO_InitStruct.Alternate = GPIO_AF8_USART6;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  // Reconfigure PC7 as EXTI line for wake-up
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  // Enable EXTI line for PC7
+  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
@@ -987,36 +1171,54 @@ static void MX_GPIO_Init(void)
 		if (huart->Instance == USART6) {
 			if (uart_rx_char == '\n' || uart_rx_char == '\r') {
 				newline_count++;
-				if (newline_count >= 3) {  // 1 line message
-					uart_rx_buffer[uart_rx_index] = '\0';  // Null-terminate
+				if (newline_count >= 1) {
+					uart_rx_buffer[uart_rx_index] = '\0';
 
 					BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 					xSemaphoreGiveFromISR(xRtcUpdateSemaphore, &xHigherPriorityTaskWoken);
 					portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 
-					return;  // Don't restart reception here, let task do it
+					return;
 				}
 			} else if (uart_rx_index < UART_BUFFER_SIZE - 1) {
 				uart_rx_buffer[uart_rx_index++] = uart_rx_char;
 			} else {
-				uart_rx_index = 0;  // Overflow protection
+				uart_rx_index = 0;  // Overflow safety
 			}
 
 			HAL_UART_Receive_IT(&huart6, (uint8_t*)&uart_rx_char, 1);
 		}
 	}
+
+
 	void vPortSuppressTicksAndSleep(TickType_t xExpectedIdleTime)
 	{
 		if (xSemaphoreTake(xLowPowerSemaphore, 0) == pdPASS)
 		{
 			printf("Entered low power mode\n");
 
-			if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 10, RTC_WAKEUPCLOCK_CK_SPRE_16BITS) != HAL_OK)
+			if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 10, RTC_WAKEUPCLOCK_CK_SPRE_16BITS) != HAL_OK) //TODO change sleep time
 			{
 			Error_Handler();
 			}
+			//---------------------------------------------------------------------------------------------------//
+			// 1. Configure PC7 (USART6_RX) as EXTI to detect falling edge (start bit)
+			GPIO_InitTypeDef GPIO_InitStruct = {0};
 
+			__HAL_RCC_GPIOC_CLK_ENABLE();
 
+			GPIO_InitStruct.Pin = GPIO_PIN_7;
+			GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+			GPIO_InitStruct.Pull = GPIO_PULLUP;
+			HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+			// 2. Enable EXTI line interrupt for PC7
+			HAL_NVIC_SetPriority(EXTI9_5_IRQn, 0, 0);
+			HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+
+			// 3. Clear any pending EXTI
+			__HAL_GPIO_EXTI_CLEAR_IT(GPIO_PIN_7);
+			//---------------------------------------------------------------------------------------------------//
 			// Disable SysTick
 
 			SysTick->CTRL &= ~SysTick_CTRL_TICKINT_Msk;
@@ -1025,9 +1227,7 @@ static void MX_GPIO_Init(void)
 			taskENTER_CRITICAL();
 			// Prepare for Stop Mode (clear wakeup flags, etc.)
 			__HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
-
-
-			// HAL_PWREx_EnableFlashPowerDown();
+			HAL_PWREx_EnableFlashPowerDown();
 
 			// Enter Stop Mode
 			HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
@@ -1036,25 +1236,44 @@ static void MX_GPIO_Init(void)
 
 			// After wakeup: restore clock
 			SystemClock_Config();
-
-
-
 			// Re-enable SysTick
 			SysTick->CTRL  |= SysTick_CTRL_TICKINT_Msk;
+
+			//---------------------------------------------------------------------------------------------------//
+			// 6. Reinitialize PC7 as UART6 RX (AF8)
+			GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+			GPIO_InitStruct.Pull = GPIO_PULLUP;
+			GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+			GPIO_InitStruct.Alternate = GPIO_AF8_USART6;
+			HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+
+			//---------------------------------------------------------------------------------------------------//
+			// Check wakeup source
+			if (uartWakeupFlag) {
+			    uartWakeupFlag = false;
+
+			    printf("Woke due to UART RX (time update), skipping MainTask\n");
+			    xSemaphoreGive(xLowPowerSemaphore);
+			    // Re-enter sleep without running main tasks
+			    return;
+			}
 			printf("Exited low power mode\n");
 			HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
 			//HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 20, RTC_WAKEUPCLOCK_CK_SPRE_16BITS);
 
-			//HAL_PWREx_DisableFlashPowerDown();
+			HAL_PWREx_DisableFlashPowerDown();
 
 			// Exit critical section
 			taskEXIT_CRITICAL();
+
 		}
 		else
 		{
 			// Do nothing, let FreeRTOS idle task spin
 		}
 	}
+
 	uint32_t Read_ADC_Channel(uint32_t channel) {
 		ADC_ChannelConfTypeDef sConfig = {
 			.Channel = channel,
@@ -1066,7 +1285,40 @@ static void MX_GPIO_Init(void)
 		HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
 		return HAL_ADC_GetValue(&hadc1);
 	}
+	void WaitForACKOrRetry(void)
+	{
+	    int retry_count = 0;
+	    BaseType_t ackReceived;
 
+	    while (retry_count < MAX_RETRIES)
+	    {
+	        printf("Waiting for ACK... Attempt %d\n", retry_count + 1);
+
+	        // Start UART interrupt receive
+	        HAL_UART_Receive_IT(&huart6, (uint8_t *)&uart_rx_char, 1);
+
+	        // Wait for ACK semaphore (set in ISR callback)
+	        ackReceived = xSemaphoreTake(xACKSemaphore, pdMS_TO_TICKS(ACK_TIMEOUT_MS));
+
+	        if (ackReceived == pdTRUE)
+	        {
+	            printf("ACK received.\n");
+	            return;  // Success
+	        }
+	        else
+	        {
+	            printf("ACK not received. Retrying...\n");
+
+	            // Retransmit last message
+	            snprintf(uart_buf, sizeof(uart_buf), "Wakeup Time: %d seconds\r\n", sleep_time);
+	            HAL_UART_Transmit(&huart6, (uint8_t *)uart_buf, strlen(uart_buf), HAL_MAX_DELAY);
+	        }
+
+	        retry_count++;
+	    }
+
+	    printf("No ACK after %d attempts. Proceeding...\n", MAX_RETRIES);
+	}
 /* USER CODE END 4 */
 
 /**

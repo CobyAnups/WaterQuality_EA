@@ -22,6 +22,7 @@
 #include "stm32f4xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdbool.h>    // for bool type
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -71,7 +72,7 @@ extern UART_HandleTypeDef huart6;
 extern TIM_HandleTypeDef htim5;
 
 /* USER CODE BEGIN EV */
-
+extern volatile bool uartWakeupFlag;
 /* USER CODE END EV */
 
 /******************************************************************************/
@@ -236,5 +237,12 @@ void USART6_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
-
+//void EXTI9_5_IRQHandler(void)
+//{
+//    if (__HAL_GPIO_EXTI_GET_IT(GPIO_PIN_7) != RESET)
+//    {
+//        __HAL_GPIO_EXTI_CLEAR_IT(GPIO_PIN_7);
+//        uartWakeupFlag = true;  // <-- Set flag
+//    }
+//}
 /* USER CODE END 1 */
