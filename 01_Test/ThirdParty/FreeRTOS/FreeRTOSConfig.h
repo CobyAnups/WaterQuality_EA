@@ -123,6 +123,5 @@ standard names. */
 #define vPortSVCHandler SVC_Handler
 #define xPortPendSVHandler PendSV_Handler
 #define xPortSysTickHandler SysTick_Handler
-//#include "trcRecorder.h"            //TODO
 #endif /* FREERTOS_CONFIG_H */
 
