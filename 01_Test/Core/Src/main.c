@@ -93,6 +93,19 @@
 
 
 	#define ACK_TIMEOUT_MS 60000  // 1 minute
+
+	#define MAX_READINGS 5
+	typedef struct {
+
+	    char timestamp[25];   // ISO string
+	    float temp;
+	    float ph;
+	    float do_val;
+	    int batt;
+	    uint8_t index;
+	} SensorReading;
+
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -117,13 +130,15 @@ UART_HandleTypeDef huart6;
 /* USER CODE BEGIN PV */
 	/* RTOS Task Handles */
 	TaskHandle_t xMainTask;
-	TaskHandle_t xRtcUpdateHandle;
+	TaskHandle_t RcvTask;
 	TaskHandle_t xBoot;
+	TaskHandle_t xTX_Task;
 	/* RTOS Synchronization Objects */
 
 	SemaphoreHandle_t xLowPowerSemaphore;
 	SemaphoreHandle_t xRtcUpdateSemaphore;
 	SemaphoreHandle_t xAckSemaphore;
+	SemaphoreHandle_t xMainTaskSemaphore;
 	/* Sensor Data (Raw + Processed) */
 	uint32_t adc_raw_ph = 0, adc_raw_do = 0;
 	uint32_t ph_v = 0, ph_cv = 0;
@@ -155,6 +170,12 @@ UART_HandleTypeDef huart6;
 	bool ack_received = false;
 
 	int sleep_lvl = 0; // Sleep level for EA behavior control
+
+	SensorReading readings[5] = {0};  // Array to hold sensor readings
+	uint16_t reading_ids[5];  // Parallel array to track global_id per reading
+	uint8_t current_index = 0;  // increments after each set
+	uint16_t global_id = 0;
+	uint8_t resend_indexes[5] = {0};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -171,8 +192,9 @@ static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 	static void ParseGPSAndSetRTC(void);
 	static void MainTask_handle(void*parameters);
-	static void RP1_UART_Handler_Task(void* parameters);
+	static void Receive_Task(void* parameters);
 	static void BootTask(void *params);
+	static void get_timestamp(char* buffer);
 //	static void WaitForACKOrRetry(void);
 
 /* USER CODE END PFP */
@@ -183,228 +205,291 @@ static void MX_USART1_UART_Init(void);
 	{
 		while(1)
 		{
-			printf("Program Start \n");
-			vTaskDelay(pdMS_TO_TICKS(2000));
-
-			//Turn Pin LOW PC10  | EA GPIO RELAY MODULE
-			HAL_GPIO_WritePin(EA_RELAY_GPIO , GPIO_PIN_RESET);  // PC10: LOW
-			vTaskDelay(pdMS_TO_TICKS(2000));
-
-			//Read ADC on PA0	|
-
-			//Batt_raw = Read_ADC_Channel(ADC_CHANNEL_0); //TODO CHANGE
-			Batt_raw = 2000;
-			HAL_GPIO_WritePin(EA_RELAY_GPIO , GPIO_PIN_SET);
-
-
-			//INSERT TABLE BELOW
-			if (Batt_raw < Level_0 )// 0-10%
+			if (xSemaphoreTake(xMainTaskSemaphore, portMAX_DELAY) == pdTRUE)
 			{
-				printf("Battery Level: 0-10%%\n");
-				//todo UART Transmit Low battery %d Batt_raw
-				sleep_time = 30; // 30 seconds in seconds
-				xSemaphoreGive(xLowPowerSemaphore); // Signal low power mode
-				vTaskDelay(pdMS_TO_TICKS(10000)); // Delay to allow Task Block to low power mode.
-			}
-			else {
+//				// Reset the semaphore for next use
+//				xSemaphoreTake(xMainTaskSemaphore, 0);
+//
+//				// Initialize variables
+//				uint32_t Batt_raw = 0;
+//				uint16_t sleep_time = DEFAULT_SLEEP_TIME;
+//
+//				// Initialize readings array
+//				memset(readings, 0, sizeof(readings));
+//				memset(reading_ids, 0, sizeof(reading_ids));
+//				current_index = 0;
+//				global_id = 0;
+
+					// Print start message
+				printf("Program Start \n");
 
 
-				if (Batt_raw < Level_1) {// 10-20%
-					sleep_time = 60; // 6 hours in seconds
+				//Turn Pin LOW PC10  | EA GPIO RELAY MODULE
+				HAL_GPIO_WritePin(EA_RELAY_GPIO , GPIO_PIN_RESET);  // PC10: LOW
+				vTaskDelay(pdMS_TO_TICKS(2000));
 
-					printf("Battery Level: 10-20%%\n");
-					//todo SET SLEEP_TIME to 6 hours
-				}else if (Batt_raw < Level_2) {
-					//set wakeup timer to Every 4 hours
-					sleep_time = 14400; // 4 hours in seconds
-					printf("Battery Level: 20-30%%\n");
+				//Read ADC on PA0	|
 
-				}else if (Batt_raw < Level_3) {
-					//set wakeup timer to Every 2 hours
-					sleep_time = 7200; // 2 hours in seconds
-					printf("Battery Level: 30-40%%\n");
+				//Batt_raw = Read_ADC_Channel(ADC_CHANNEL_0); //TODO CHANGE
+				Batt_raw = 2000;
+				HAL_GPIO_WritePin(EA_RELAY_GPIO , GPIO_PIN_SET);
 
-				}else if (Batt_raw < Level_4) {
-					//set wakeup timer to Every 1 hour
-					sleep_time = 3600; // 1 hour in seconds
-					printf("Battery Level: 40-50%%\n");
 
+				//INSERT TABLE BELOW
+				if (Batt_raw < Level_0 )// 0-10%
+				{
+					printf("Battery Level: 0-10%%\n");
+					//todo UART Transmit Low battery %d Batt_raw
+					sleep_time = 30; // 30 seconds in seconds
+					xSemaphoreGive(xLowPowerSemaphore); // Signal low power mode
+					vTaskDelay(pdMS_TO_TICKS(10000)); // Delay to allow Task Block to low power mode.
 				}
-
-				// Turn everything ON
-				printf("PUMPING ON\n");
-				HAL_GPIO_WritePin(PUMP1, GPIO_PIN_RESET);  // PC3: Pump ON
-
-				vTaskDelay(pdMS_TO_TICKS(PUMP1_DURATION ));  // 90 seconds delay while ON
+				else {
 
 
-				// Turn Pump OFF
-				printf("PUMP OFF, \nSENSORS ON\n");
-				HAL_GPIO_WritePin(PUMP1, GPIO_PIN_SET);  // PC3 Pump OFF
+					if (Batt_raw < Level_1) {// 10-20%
+						sleep_time = 60; // 6 hours in seconds
+
+						printf("Battery Level: 10-20%%\n");
+						//todo SET SLEEP_TIME to 6 hours
+					}else if (Batt_raw < Level_2) {
+						//set wakeup timer to Every 4 hours
+						sleep_time = 14400; // 4 hours in seconds
+						printf("Battery Level: 20-30%%\n");
+
+					}else if (Batt_raw < Level_3) {
+						//set wakeup timer to Every 2 hours
+						sleep_time = 7200; // 2 hours in seconds
+						printf("Battery Level: 30-40%%\n");
+
+					}else if (Batt_raw < Level_4) {
+						//set wakeup timer to Every 1 hour
+						sleep_time = 3600; // 1 hour in seconds
+						printf("Battery Level: 40-50%%\n");
+
+					}
+
+					// Turn everything ON
+					printf("PUMPING ON\n");
+					HAL_GPIO_WritePin(PUMP1, GPIO_PIN_RESET);  // PC3: Pump ON
+
+					vTaskDelay(pdMS_TO_TICKS(PUMP1_DURATION ));  // 90 seconds delay while ON
 
 
-				HAL_GPIO_WritePin(pH_POWER, GPIO_PIN_SET);   // PC4: Sensor ON
-				HAL_GPIO_WritePin(Temp_POWER, GPIO_PIN_SET);   // PC5: Sensor ON
-				vTaskDelay(pdMS_TO_TICKS(3000));  // 60 seconds delay while pump is OFF
+					// Turn Pump OFF
+					printf("PUMP OFF, \nSENSORS ON\n");
+					HAL_GPIO_WritePin(PUMP1, GPIO_PIN_SET);  // PC3 Pump OFF
 
 
-
-				// Read Sensors
-				printf("GETTING DATA\n");
-	//			uint32_t count = __HAL_TIM_GET_COUNTER(&htim2);
-	//			printf("TIM2 Counter: %lu\n", count);
-	//		for (int i = 0; i < 5; ++i)
-	//		{
-				printf("pH \n");
-				// ----------- pH (now on PB0 - ADC_CHANNEL_8) -----------
-
-				adc_raw_ph = Read_ADC_Channel(ADC_CHANNEL_8);
-				//uint32_t ph_scaled = (adc_raw_ph * 330) / 4095;
-				ph_scaled = (adc_raw_ph );
-				printf("Temp \n");
-
-				// ----------- Temp (DS18B20) -----------
-				temp = Temperature_Read();  // 16x the real temperature
-
-				printf("DO \n");
-				// ----------- DO (now on PA1 - ADC_CHANNEL_1) -----------
-				adc_raw_do = Read_ADC_Channel(ADC_CHANNEL_1);
-				do_scaled = (adc_raw_do);
+					HAL_GPIO_WritePin(pH_POWER, GPIO_PIN_SET);   // PC4: Sensor ON
+					HAL_GPIO_WritePin(Temp_POWER, GPIO_PIN_SET);   // PC5: Sensor ON
+					vTaskDelay(pdMS_TO_TICKS(3000));  // 60 seconds delay while pump is OFF
 
 
-				// --- Get RTC Time & Date ---
-				RTC_TimeTypeDef sTime;
-				RTC_DateTypeDef sDate;
+					// Read Sensors
+					printf("GETTING DATA\n");
 
-				HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
-				HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+					for (int i = 0; i < 5; i++) {
+						SensorReading r;
 
+						// Populate one reading (replace with your actual data acquisition)
 
+						get_timestamp(r.timestamp); // You’ll need to implement this
+						r.temp = Temperature_Read();
+						r.ph = Read_ADC_Channel(ADC_CHANNEL_8);
+						r.do_val = Read_ADC_Channel(ADC_CHANNEL_1);
+						r.batt = Batt_raw;
+						r.index = i;
 
-				// --- Final UART Print with Timestamp ---
-				snprintf(uart_buf, sizeof(uart_buf),
-						 "id:0000, type:1, time:%04d-%02d-%02dT%02d:%02d:%02d.000Z, temp:%.2f, ph:%.2f, do:%.2fbatt:%u\r\n",
-						  // id, change as needed
-						 2000 + sDate.Year, sDate.Month, sDate.Date,
-						 sTime.Hours, sTime.Minutes, sTime.Seconds,
-						 temp,
-						 ph_scaled,
-						 do_scaled,
-						 Batt_raw); // Add your battery value here
+						readings[i] = r;
+						reading_ids[i] = global_id++;
 
-				/*// Formatted code below
-				 * snprintf(uart_buf, sizeof(uart_buf), "{\"local_time\":\"%04d-%02d-%02dT%02d:%02d:%02d\", \"temp\":%d.%02d, \"ph\":%lu, \"do\":%lu.%02lu, \"batt\":%lu}",
-					 2000 + sDate.Year, sDate.Month, sDate.Date,
-					 sTime.Hours, sTime.Minutes, sTime.Seconds,
-					 temp_v, temp_cv,
-					 ph_v,
-					 do_v, do_cv,
-					 bat_v);  // <-- make sure you define and calculate bat_v earlier
-				 */
+						snprintf(uart_buf, sizeof(uart_buf),
+							   "id:0000, type:1, time:%s, temp:%.2f, ph:%.2f, do:%.2f, batt:%d, ind:%d\r\n",
+							   r.timestamp, r.temp, r.ph, r.do_val, r.batt, r.index);
 
-				HAL_UART_Transmit(&huart2, (uint8_t *)uart_buf, strlen(uart_buf), HAL_MAX_DELAY);
+						Mount_SD("/");
+						Update_File("LOGS.TXT", uart_buf);
+						//vPortFree(uart_buf);
+						Unmount_SD("/");
 
-				printf("Upload to SD Card Task Running\n");
-				Mount_SD("/");
-				Update_File("LOGS.TXT", uart_buf);
-				//vPortFree(uart_buf);
-				Unmount_SD("/");
-				vTaskDelay(1000 / portTICK_PERIOD_MS); // 1 second between each reading
-	//		}
+						vTaskDelay(pdMS_TO_TICKS(5000));  // Delay between readings
+					}
+					xTaskNotifyGive(xTX_Task);
 
-				printf("SENSORS OFF\n");
-				HAL_GPIO_WritePin(pH_POWER, GPIO_PIN_RESET);   // PC4: Sensor OFF
-				HAL_GPIO_WritePin(Temp_POWER, GPIO_PIN_RESET);   // PC5: Sensor OFF
-				printf("5 sec delay then continue to Dispose\n");
-				vTaskDelay(pdMS_TO_TICKS(5000));// Wait 5 seconds before repeating the 5-set loop
+	//				// --- Final UART Print with Timestamp ---
+	//				snprintf(uart_buf, sizeof(uart_buf),
+	//						 "id:0000, type:1, time:%04d-%02d-%02dT%02d:%02d:%02d.000Z, temp:%.2f, ph:%.2f, do:%.2fbatt:%u\r\n",
+	//						  // id, change as needed
+	//						 2000 + sDate.Year, sDate.Month, sDate.Date,
+	//						 sTime.Hours, sTime.Minutes, sTime.Seconds,
+	//						 temp,
+	//						 ph_scaled,
+	//						 do_scaled,
+	//						 Batt_raw); // Add your battery value here
+	//				HAL_UART_Transmit(&huart2, (uint8_t *)uart_buf, strlen(uart_buf), HAL_MAX_DELAY);
 
 
 
-				// Wait briefly before next cycle
-
-
-				printf("Dispose \n ");
-				HAL_GPIO_WritePin(PUMP2, GPIO_PIN_RESET);  // PA15: Pump ON
-				vTaskDelay(pdMS_TO_TICKS(3000));
-
-				printf("StopClean \n");
-				HAL_GPIO_WritePin(PUMP2, GPIO_PIN_SET);  // PA15: Pump OFF
-				vTaskDelay(pdMS_TO_TICKS(3000));
-
-				printf("Cleaning \n");
-				//HAL_GPIO_WritePin(PUMP3, GPIO_PIN_RESET);  // PB7: Pump ON
-				vTaskDelay(pdMS_TO_TICKS(3000));
+					printf("SENSORS OFF\n");
+					HAL_GPIO_WritePin(pH_POWER, GPIO_PIN_RESET);   // PC4: Sensor OFF
+					HAL_GPIO_WritePin(Temp_POWER, GPIO_PIN_RESET);   // PC5: Sensor OFF
+					printf("5 sec delay then continue to Dispose\n");
+					vTaskDelay(pdMS_TO_TICKS(5000));// Wait 5 seconds before repeating the 5-set loop
 
 
 
-				printf("StopDispose \n");
-				//HAL_GPIO_WritePin(PUMP3, GPIO_PIN_SET);  // PB7: Pump OFF
-				HAL_GPIO_WritePin(PUMP1, GPIO_PIN_RESET);
-				printf("entering low power \n");
-				xSemaphoreGive(xLowPowerSemaphore); // Signal low power mode
-				vTaskDelay(pdMS_TO_TICKS(10000)); //ADDED 15 seconds delay before next cycle
+					// Wait briefly before next cycle
+
+
+					printf("Dispose \n ");
+					HAL_GPIO_WritePin(PUMP2, GPIO_PIN_RESET);  // PA15: Pump ON
+					vTaskDelay(pdMS_TO_TICKS(5000));
+
+					printf("StopClean \n");
+					HAL_GPIO_WritePin(PUMP2, GPIO_PIN_SET);  // PA15: Pump OFF
+					vTaskDelay(pdMS_TO_TICKS(5000));
+
+					printf("Cleaning \n");
+					//HAL_GPIO_WritePin(PUMP3, GPIO_PIN_RESET);  // PB7: Pump ON
+					vTaskDelay(pdMS_TO_TICKS(5000));
+
+
+
+					printf("StopDispose \n");
+					//HAL_GPIO_WritePin(PUMP3, GPIO_PIN_SET);  // PB7: Pump OFF
+					HAL_GPIO_WritePin(PUMP1, GPIO_PIN_RESET);
+
+					// Signal low power mode
+					vTaskDelay(pdMS_TO_TICKS(10000)); //ADDED 10 seconds delay before next cycle
+				}
 			}
 		}
 	}
 
-	void RP1_UART_Handler_Task(void *argument)
+
+	void TX_Task(void *params)
+	{
+	    char tx_buf[256];
+	    const TickType_t ack_timeout = pdMS_TO_TICKS(60000);  // 60s
+
+	    for (;;)
+	    {
+	        // Wait for notification from MainTask
+	        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+	        BaseType_t ack_received = pdFALSE;
+
+	        for (int retry = 0; retry < 3; retry++)
+	        {
+	            for (int i = 0; i < 5; i++) {
+	                SensorReading r = readings[i];
+	                uint16_t id = reading_ids[i];
+
+	                snprintf(tx_buf, sizeof(tx_buf),
+	                    "type:0,id:%04d,time:%s,temp:%.2f,ph:%.2f,do:%.2f,batt:%d,ind:%d\n",
+	                    id, r.timestamp, r.temp, r.ph, r.do_val, r.batt, r.index);
+
+	                HAL_UART_Transmit(&huart6, (uint8_t *)tx_buf, strlen(tx_buf), HAL_MAX_DELAY);
+
+	                vTaskDelay(pdMS_TO_TICKS(10000)); // Delay between sends
+	            }
+
+	            // Wait for ACK after sending batch
+	            if (xSemaphoreTake(xAckSemaphore, ack_timeout) == pdTRUE) {
+	                printf("ACK received for batch. Proceeding to STOP mode.\n");
+	                xSemaphoreGive(xLowPowerSemaphore);
+	                ack_received = pdTRUE;
+	                break;  // Exit retry loop
+	            } else {
+	                printf("No ACK received. Retrying batch (%d)...\n", retry + 1);
+	            }
+	        }
+
+	        // === Fallback if retries exhausted ===
+	        if (ack_received == pdFALSE) {
+	            printf("[TX_Task] Failed to receive ACK after 3 retries. Forcing STOP mode.\n");
+	            xSemaphoreGive(xLowPowerSemaphore);  // Still go to low power
+	        }
+	    }
+	}
+	void Receive_Task(void *argument)
 	{
 	    for (;;)
 	    {
 	        if (xSemaphoreTake(xRtcUpdateSemaphore, portMAX_DELAY) == pdTRUE)
 	        {
-	            if (strstr((char*)uart_rx_buffer, "type: 1") != NULL)
+	            // Ensure buffer is null-terminated
+	            uart_rx_buffer[UART_BUFFER_SIZE - 1] = '\0';
+
+
+	            // Strip newlines or carriage return
+	            for (int i = 0; i < UART_BUFFER_SIZE; i++) {
+	                if (uart_rx_buffer[i] == '\r' || uart_rx_buffer[i] == '\n') {
+	                    uart_rx_buffer[i] = '\0';
+	                    break;
+	                }
+	            }
+
+	            if (strstr((char*)uart_rx_buffer, "type:1") != NULL)
 	            {
 	                printf("received (type 1)\n");
 
-	                // Delete BootTask safely
-	                if (xBoot != NULL)
-	                {
+	                if (xBoot != NULL) {
 	                    vTaskDelete(xBoot);
 	                    xBoot = NULL;
+	                    xSemaphoreGive(xMainTaskSemaphore); // Signal MainTask to start
 	                }
 
-	                // Only create MainTask if it hasn't been created
-	                if (xMainTask == NULL)
-	                {
-	                    BaseType_t result = xTaskCreate(
-	                        MainTask_handle,
-	                        "Main-Task",
-	                        1000,
-	                        NULL,
-	                        3,
-	                        &xMainTask
-	                    );
-	                    configASSERT(result == pdPASS);
+
+	                else {
+	                    printf("ack rcvd");
+	                    // Signal TX task that ACK has been received
+						xSemaphoreGive(xAckSemaphore);
 	                }
-	                else
-	                {
-	                    printf("[Handler] MainTask already running. Skipping creation.\n");
+
+
+	            }
+	            else if (strstr((char*)uart_rx_buffer, "type:2") != NULL)
+	            {
+	                printf("Type 2 message — TODO\n");
+	            }
+	            else if (strstr((char*)uart_rx_buffer, "type:3") != NULL)
+	            {
+	                memset(resend_indexes, 0, sizeof(resend_indexes));
+
+	                char *ind_str = strstr(uart_rx_buffer, "ind:");
+	                if (ind_str) {
+	                    ind_str += 4; // move past "ind:"
+	                    char *token = strtok(ind_str, ",");
+	                    while (token != NULL) {
+	                        int idx = atoi(token);
+	                        if (idx >= 0 && idx < 5) {
+	                            resend_indexes[idx] = 1;
+	                        }
+	                        token = strtok(NULL, ",");
+	                    }
+
+	                    xTaskNotifyGive(xTX_Task);
+	                } else {
+	                    printf("Failed to parse type:3 indexes\n");
 	                }
-	            }
-	            else if (strstr((char*)uart_rx_buffer, "type: 2") != NULL)
-	            {
-	                printf(" Type 2 message — TODO\n");
-	            }
-	            else if (strstr((char*)uart_rx_buffer, "type: 3") != NULL)
-	            {
-	                printf(" Type 3 message — TODO\n");
 	            }
 	            else
 	            {
-	                printf(" Unknown type\n");
+	                printf("Unknown type\n");
 	            }
 
-	            // Reset buffer state
+	            // Reset buffer
 	            memset(uart_rx_buffer, 0, UART_BUFFER_SIZE);
 	            uart_rx_index = 0;
 	            newline_count = 0;
 
-	            // Restart reception
-	            HAL_UART_Receive_IT(&huart6, &uart_rx_char, 1);
+	            HAL_UART_Receive_IT(&huart6, (uint8_t*)&uart_rx_char, 1);
 	        }
 	    }
 	}
+
 
 
 	void BootTask(void *params) {
@@ -444,9 +529,9 @@ static void MX_USART1_UART_Init(void);
 			HAL_UART_Transmit(&huart6, (uint8_t *)uart_buf, strlen(uart_buf), HAL_MAX_DELAY);
 			printf("Waiting..\n");
 			vTaskDelay(pdMS_TO_TICKS(60000)); // Wait 1 minute before continuing
-		}
-	    // Continue regardless of ACK status
 
+	    // Continue regardless of ACK status
+		}
 	}
 
 /* USER CODE END 0 */
@@ -499,21 +584,25 @@ int main(void)
 	  HAL_TIM_Base_Start(&htim1); // periodic delay timer for SD Card
 //	  xTaskCreate(MainTask_handle, "Main-Task", 1000, NULL, 3,  &xMainTask);
 //	  configASSERT(xMainTask != NULL);
-	  xTaskCreate(BootTask, "Boot", 1024, NULL, 1, &xBoot); // Priority 3
+	  xTaskCreate(BootTask, "Boot", 1024, NULL, 2, &xBoot); // Priority 3
 	  configASSERT(BootTask != NULL);
-	  xTaskCreate(RP1_UART_Handler_Task, "RP1_UART_Handler", 512, NULL, 5, &xRtcUpdateHandle);
-	  configASSERT(xRtcUpdateHandle != NULL);
+	  xTaskCreate(Receive_Task, "Receive_Handle", 500, NULL, 5, &RcvTask);
+	  configASSERT(RcvTask != NULL);
+	  xTaskCreate(MainTask_handle, "Main-Task", 1000, NULL, 3, &xMainTask);
+	  configASSERT(xMainTask != NULL);
+	  xTaskCreate(TX_Task, "TX-Task", 1024, NULL, 1, &xTX_Task);
+	  configASSERT(xTX_Task != NULL);
 	  HAL_UART_Receive_IT(&huart6, (uint8_t *)&uart_rx_char, 1);
-
 	  // Create binary semaphore for UART transmission
 	  xLowPowerSemaphore = xSemaphoreCreateBinary();
 	  configASSERT(xLowPowerSemaphore != NULL);
 	  xRtcUpdateSemaphore = xSemaphoreCreateBinary();
 	  configASSERT(xRtcUpdateSemaphore != NULL);
 
-
-//	  xAckSemaphore = xSemaphoreCreateBinary();
-//	  configASSERT(xAckSemaphore != NULL);
+	  xMainTaskSemaphore = xSemaphoreCreateBinary();
+	  configASSERT(xMainTaskSemaphore != NULL);
+	  xAckSemaphore = xSemaphoreCreateBinary();
+	  configASSERT(xAckSemaphore != NULL);
 	  vTaskStartScheduler();
   /* USER CODE END 2 */
 
@@ -1092,6 +1181,17 @@ static void MX_GPIO_Init(void)
 			HAL_UART_Receive_IT(&huart6, (uint8_t*)&uart_rx_char, 1);
 		}
 	}
+	void get_timestamp(char* buffer)
+	{
+	    RTC_DateTypeDef sDate;
+	    RTC_TimeTypeDef sTime;
+	    HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+	    HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+
+	    sprintf(buffer, "2025-%02d-%02dT%02d:%02d:%02d.000Z",
+	            sDate.Month, sDate.Date,
+	            sTime.Hours, sTime.Minutes, sTime.Seconds);
+	}
 	void ParseGPSAndSetRTC(void) {
 	    char *token;
 	    RTC_TimeTypeDef sTime = {0};
@@ -1180,19 +1280,19 @@ static void MX_GPIO_Init(void)
 	           sTime.Hours, sTime.Minutes, sTime.Seconds,
 	           sDate.Date, sDate.Month, sDate.Year);
 	}
+
+
 	void vPortSuppressTicksAndSleep(TickType_t xExpectedIdleTime)
 	{
 		if (xSemaphoreTake(xLowPowerSemaphore, 0) == pdPASS)
 		{
 			printf("Entered low power mode\n");
 
-			if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 10, RTC_WAKEUPCLOCK_CK_SPRE_16BITS) != HAL_OK) //TODO change sleep time
+			if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 60, RTC_WAKEUPCLOCK_CK_SPRE_16BITS) != HAL_OK) //TODO change sleep time
 			{
 			Error_Handler();
 			}
 			//---------------------------------------------------------------------------------------------------//
-
-
 
 			//---------------------------------------------------------------------------------------------------//
 			// Disable SysTick
@@ -1221,20 +1321,13 @@ static void MX_GPIO_Init(void)
 
 			//---------------------------------------------------------------------------------------------------//
 			// Check wakeup source
-			if (uartWakeupFlag) {
-			    uartWakeupFlag = false;
 
-			    printf("Woke due to UART RX (time update), skipping MainTask\n");
-			    xSemaphoreGive(xLowPowerSemaphore);
-			    // Re-enter sleep without running main tasks
-			    return;
-			}
 			printf("Exited low power mode\n");
 			HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
 			//HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 20, RTC_WAKEUPCLOCK_CK_SPRE_16BITS);
 
 			//HAL_PWREx_DisableFlashPowerDown();
-
+			xSemaphoreGive(xMainTaskSemaphore); // Notify main task to continue
 			// Exit critical section
 			taskEXIT_CRITICAL();
 
