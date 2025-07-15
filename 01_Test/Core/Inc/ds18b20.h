@@ -21,6 +21,6 @@ uint8_t DS18B20_Start (void);
 void DS18B20_Write (uint8_t data);
 
 uint8_t DS18B20_Read (void);
-int16_t Temperature_Read(void);
+float Temperature_Read(void);
 
 #endif /* INC_DS18B20_H_ */

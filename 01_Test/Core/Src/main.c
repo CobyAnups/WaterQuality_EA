@@ -60,16 +60,16 @@
 	#define DEFAULT_SLEEP_TIME 30  // seconds — TODO: change to 1 hour (3600) before deployment
 
 	#define PUMP1        			GPIOC, GPIO_PIN_3
-	#define PUMP2       			GPIOA, GPIO_PIN_15
-	//#define PUMP3         			GPIOB, GPIO_PIN_7
+	#define PUMP3       			GPIOA, GPIO_PIN_15
+	#define PUMP2         			GPIOC, GPIO_PIN_0
 	#define pH_POWER     			GPIOC, GPIO_PIN_4
 	#define Temp_POWER      		GPIOC, GPIO_PIN_5
 
 	#define EA_RELAY_GPIO           GPIOC, GPIO_PIN_12
 
-	#define PUMP1_DURATION     		3000
+	#define PUMP1_DURATION     		45000
 	#define SENSOR_ON_DURATION_MS   3000
-	#define PUMP2_DURATION     		3000
+	#define PUMP2_DURATION     		45000
 	#define PUMP3_DURATION        	3000
 
 	#define BKP_REG_SYNC_FLAG RTC_BKP_DR1
@@ -87,14 +87,11 @@
 	#define LEVEL_4 5000
 	#define LEVEL_5 6000
 
-	// GPIO Pins for RTC Wakeup
-	#define RTC_WAKEUP_PIN GPIO_PIN_13
-	#define RTC_WAKEUP_GPIO GPIOC
 
 
 	#define ACK_TIMEOUT_MS 60000  // 1 minute
 
-	#define MAX_READINGS 5
+	#define MAX_READINGS 3
 	typedef struct {
 
 	    char timestamp[25];   // ISO string
@@ -171,11 +168,14 @@ UART_HandleTypeDef huart6;
 
 	int sleep_lvl = 0; // Sleep level for EA behavior control
 
-	SensorReading readings[5] = {0};  // Array to hold sensor readings
-	uint16_t reading_ids[5];  // Parallel array to track global_id per reading
+	SensorReading readings[6] = {0};  // Array to hold sensor readings
+	uint16_t reading_ids[6];  // Parallel array to track global_id per reading
 	uint8_t current_index = 0;  // increments after each set
 	uint16_t global_id = 0;
-	uint8_t resend_indexes[5] = {0};
+	uint8_t resend_indexes[6] = {0};
+
+	volatile bool resend_requested = false;
+	volatile uint8_t tx_type_override = 0;  // 0 = type:0 (normal), 3 = type:3 (resend)
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -224,11 +224,11 @@ static void MX_USART1_UART_Init(void);
 				printf("Program Start \n");
 
 
-				//Turn Pin LOW PC10  | EA GPIO RELAY MODULE
-				HAL_GPIO_WritePin(EA_RELAY_GPIO , GPIO_PIN_RESET);  // PC10: LOW
-				vTaskDelay(pdMS_TO_TICKS(2000));
+				//Turn Pin LOW PC12  | EA GPIO RELAY MODULE
+				HAL_GPIO_WritePin(EA_RELAY_GPIO , GPIO_PIN_RESET);  // PC12: LOW
+				vTaskDelay(pdMS_TO_TICKS(200));
 
-				//Read ADC on PA0	|
+
 
 				//Batt_raw = Read_ADC_Channel(ADC_CHANNEL_0); //TODO CHANGE
 				Batt_raw = 2000;
@@ -241,6 +241,8 @@ static void MX_USART1_UART_Init(void);
 					printf("Battery Level: 0-10%%\n");
 					//todo UART Transmit Low battery %d Batt_raw
 					sleep_time = 30; // 30 seconds in seconds
+
+					//HAL_UART_Transmit(&huart6, (uint8_t *)"Low Battery Detected, Entering Low Power Mode\n", 44, HAL_MAX_DELAY);
 					xSemaphoreGive(xLowPowerSemaphore); // Signal low power mode
 					vTaskDelay(pdMS_TO_TICKS(10000)); // Delay to allow Task Block to low power mode.
 				}
@@ -249,7 +251,6 @@ static void MX_USART1_UART_Init(void);
 
 					if (Batt_raw < Level_1) {// 10-20%
 						sleep_time = 60; // 6 hours in seconds
-
 						printf("Battery Level: 10-20%%\n");
 						//todo SET SLEEP_TIME to 6 hours
 					}else if (Batt_raw < Level_2) {
@@ -270,97 +271,72 @@ static void MX_USART1_UART_Init(void);
 					}
 
 					// Turn everything ON
-					printf("PUMPING ON\n");
+					printf("PUMP ON\n");
 					HAL_GPIO_WritePin(PUMP1, GPIO_PIN_RESET);  // PC3: Pump ON
 
-					vTaskDelay(pdMS_TO_TICKS(PUMP1_DURATION ));  // 90 seconds delay while ON
+					vTaskDelay(pdMS_TO_TICKS(PUMP1_DURATION ));  // 90 seconds delay while ON //todo time
 
 
 					// Turn Pump OFF
-					printf("PUMP OFF, \nSENSORS ON\n");
+					printf("PUMP OFF, SENSORS ON\n");
 					HAL_GPIO_WritePin(PUMP1, GPIO_PIN_SET);  // PC3 Pump OFF
 
 
 					HAL_GPIO_WritePin(pH_POWER, GPIO_PIN_SET);   // PC4: Sensor ON
 					HAL_GPIO_WritePin(Temp_POWER, GPIO_PIN_SET);   // PC5: Sensor ON
-					vTaskDelay(pdMS_TO_TICKS(3000));  // 60 seconds delay while pump is OFF
+					vTaskDelay(pdMS_TO_TICKS(3000));  // 60 seconds delay while pump is OFF //todo time
 
 
 					// Read Sensors
 					printf("GETTING DATA\n");
 
-					for (int i = 0; i < 5; i++) {
-						SensorReading r;
+					for (int i = 0; i < MAX_READINGS; i++) {
+					    SensorReading r;
 
-						// Populate one reading (replace with your actual data acquisition)
+					    get_timestamp(r.timestamp); // Your timestamp function
+					    r.temp = Temperature_Read();
+					    r.ph = Read_ADC_Channel(ADC_CHANNEL_8)/100; //todo
+					    r.do_val = Read_ADC_Channel(ADC_CHANNEL_1)/100; //todo
+					    r.batt = 80; //todo
+					    r.index = i + 1; // Index starts from 1
+					    printf("%.2f",r.temp);
+					    readings[i] = r;
+					    reading_ids[i] = global_id++;
 
-						get_timestamp(r.timestamp); // You’ll need to implement this
-						r.temp = Temperature_Read();
-						r.ph = Read_ADC_Channel(ADC_CHANNEL_8);
-						r.do_val = Read_ADC_Channel(ADC_CHANNEL_1);
-						r.batt = Batt_raw;
-						r.index = i;
+					    snprintf(uart_buf, sizeof(uart_buf),
+					             "type:0,id:%04d,time:%s,temp:%.2f,ph:%.2f,do:%05.2f,batt:%02d,ind:%d\r\n",
+					             reading_ids[i], r.timestamp, r.temp, r.ph, r.do_val, r.batt, r.index);
 
-						readings[i] = r;
-						reading_ids[i] = global_id++;
+					    Mount_SD("/");
+					    Update_File("LOGS.TXT", uart_buf);
+					    Unmount_SD("/");
 
-						snprintf(uart_buf, sizeof(uart_buf),
-							   "id:0000, type:1, time:%s, temp:%.2f, ph:%.2f, do:%.2f, batt:%d, ind:%d\r\n",
-							   r.timestamp, r.temp, r.ph, r.do_val, r.batt, r.index);
-
-						Mount_SD("/");
-						Update_File("LOGS.TXT", uart_buf);
-						//vPortFree(uart_buf);
-						Unmount_SD("/");
-
-						vTaskDelay(pdMS_TO_TICKS(5000));  // Delay between readings
+					    vTaskDelay(pdMS_TO_TICKS(1000));
 					}
 					xTaskNotifyGive(xTX_Task);
-
-	//				// --- Final UART Print with Timestamp ---
-	//				snprintf(uart_buf, sizeof(uart_buf),
-	//						 "id:0000, type:1, time:%04d-%02d-%02dT%02d:%02d:%02d.000Z, temp:%.2f, ph:%.2f, do:%.2fbatt:%u\r\n",
-	//						  // id, change as needed
-	//						 2000 + sDate.Year, sDate.Month, sDate.Date,
-	//						 sTime.Hours, sTime.Minutes, sTime.Seconds,
-	//						 temp,
-	//						 ph_scaled,
-	//						 do_scaled,
-	//						 Batt_raw); // Add your battery value here
-	//				HAL_UART_Transmit(&huart2, (uint8_t *)uart_buf, strlen(uart_buf), HAL_MAX_DELAY);
-
-
 
 					printf("SENSORS OFF\n");
 					HAL_GPIO_WritePin(pH_POWER, GPIO_PIN_RESET);   // PC4: Sensor OFF
 					HAL_GPIO_WritePin(Temp_POWER, GPIO_PIN_RESET);   // PC5: Sensor OFF
-					printf("5 sec delay then continue to Dispose\n");
-					vTaskDelay(pdMS_TO_TICKS(5000));// Wait 5 seconds before repeating the 5-set loop
 
-
-
-					// Wait briefly before next cycle
 
 
 					printf("Dispose \n ");
-					HAL_GPIO_WritePin(PUMP2, GPIO_PIN_RESET);  // PA15: Pump ON
-					vTaskDelay(pdMS_TO_TICKS(5000));
+					HAL_GPIO_WritePin(PUMP2, GPIO_PIN_RESET);  // PC0: Pump ON
+					vTaskDelay(pdMS_TO_TICKS(PUMP2_DURATION));//todo time
 
-					printf("StopClean \n");
-					HAL_GPIO_WritePin(PUMP2, GPIO_PIN_SET);  // PA15: Pump OFF
-					vTaskDelay(pdMS_TO_TICKS(5000));
+					printf("StartClean \n");
+					HAL_GPIO_WritePin(PUMP3, GPIO_PIN_RESET);  // PA15: Pump ON
+					vTaskDelay(pdMS_TO_TICKS(5000)); //todo time
 
-					printf("Cleaning \n");
-					//HAL_GPIO_WritePin(PUMP3, GPIO_PIN_RESET);  // PB7: Pump ON
+					printf("StopClean\n");
+					HAL_GPIO_WritePin(PUMP3, GPIO_PIN_SET);  // PA15: Pump OFF
 					vTaskDelay(pdMS_TO_TICKS(5000));
 
 
 
 					printf("StopDispose \n");
-					//HAL_GPIO_WritePin(PUMP3, GPIO_PIN_SET);  // PB7: Pump OFF
-					HAL_GPIO_WritePin(PUMP1, GPIO_PIN_RESET);
-
-					// Signal low power mode
+					HAL_GPIO_WritePin(PUMP2, GPIO_PIN_SET);  // PC0: Pump OFF
 					vTaskDelay(pdMS_TO_TICKS(10000)); //ADDED 10 seconds delay before next cycle
 				}
 			}
@@ -368,51 +344,92 @@ static void MX_USART1_UART_Init(void);
 	}
 
 
-	void TX_Task(void *params)
+	void TX_Task(void *params)//----------------------------------------------------------------------------------------------------//
 	{
 	    char tx_buf[256];
-	    const TickType_t ack_timeout = pdMS_TO_TICKS(60000);  // 60s
+	    const TickType_t ack_timeout = pdMS_TO_TICKS(60000);  // 60 seconds
+	    const TickType_t poll_interval = pdMS_TO_TICKS(100);  // 100ms polling interval
 
 	    for (;;)
 	    {
-	        // Wait for notification from MainTask
+	        // Wait for initial trigger (from MainTask or Receive_Task)
 	        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
 	        BaseType_t ack_received = pdFALSE;
+	        int retry = 0;
 
-	        for (int retry = 0; retry < 3; retry++)
+	        while (retry < MAX_RETRIES)
 	        {
-	            for (int i = 0; i < 5; i++) {
+	            resend_requested = false;
+
+	            // Decide what to send
+	            bool send_all = true;
+	            for (int k = 1; k <= MAX_READINGS; k++) {
+	                if (resend_indexes[k - 1] != 0) {
+	                    send_all = false;
+	                    break;
+	                }
+	            }
+
+	            // Transmit selected readings
+	            for (int i = 0; i < MAX_READINGS; i++) {
+	                if (!send_all && resend_indexes[i] == 0)
+	                    continue;
+
 	                SensorReading r = readings[i];
 	                uint16_t id = reading_ids[i];
 
+	                const char* tx_type_str = (tx_type_override == 3) ? "type:3" : "type:0";
+
 	                snprintf(tx_buf, sizeof(tx_buf),
-	                    "type:0,id:%04d,time:%s,temp:%.2f,ph:%.2f,do:%.2f,batt:%d,ind:%d\n",
-	                    id, r.timestamp, r.temp, r.ph, r.do_val, r.batt, r.index);
-
+	                         "%s,id:%04d,time:%s,temp:%.2f,ph:%.2f,do:%.2f,batt:%02d,ind:%d",
+	                         tx_type_str, id, r.timestamp, r.temp, r.ph, r.do_val, r.batt, r.index);
 	                HAL_UART_Transmit(&huart6, (uint8_t *)tx_buf, strlen(tx_buf), HAL_MAX_DELAY);
-
-	                vTaskDelay(pdMS_TO_TICKS(10000)); // Delay between sends
+	                printf("%s \n", tx_buf);
+	                vTaskDelay(pdMS_TO_TICKS(3000));  // Delay between packets
 	            }
 
-	            // Wait for ACK after sending batch
-	            if (xSemaphoreTake(xAckSemaphore, ack_timeout) == pdTRUE) {
-	                printf("ACK received for batch. Proceeding to STOP mode.\n");
-	                xSemaphoreGive(xLowPowerSemaphore);
-	                ack_received = pdTRUE;
-	                break;  // Exit retry loop
-	            } else {
-	                printf("No ACK received. Retrying batch (%d)...\n", retry + 1);
+	            // Wait for ACK or Resend (with resettable timeout)
+	            TickType_t wait_start = xTaskGetTickCount();
+
+	            while ((xTaskGetTickCount() - wait_start) < ack_timeout)
+	            {
+	                if (xSemaphoreTake(xAckSemaphore, poll_interval) == pdTRUE) {
+	                    printf("ACK received. Proceeding to STOP mode.\n");
+	                    xSemaphoreGive(xLowPowerSemaphore);
+	                    ack_received = pdTRUE;
+	                    break;
+	                }
+
+	                if (resend_requested) {
+	                    printf("Resend request received. Resetting ACK timer.\n");
+	                    resend_requested = false;
+	                    wait_start = xTaskGetTickCount();  // 🔁 Reset timeout window
+	                    break;  // Re-enter transmission loop with updated resend_indexes[]
+	                }
 	            }
+
+	            if (ack_received) {
+	                break;  // ACK success → exit retry loop
+	            }
+
+	            retry++;
+	            printf("No ACK. Retrying attempt %d...\n", retry);
 	        }
 
-	        // === Fallback if retries exhausted ===
-	        if (ack_received == pdFALSE) {
-	            printf("[TX_Task] Failed to receive ACK after 3 retries. Forcing STOP mode.\n");
-	            xSemaphoreGive(xLowPowerSemaphore);  // Still go to low power
+	        if (!ack_received) {
+	            printf("[TX_Task] Failed after %d attempts. Forcing STOP mode.\n", MAX_RETRIES);
+	            xSemaphoreGive(xLowPowerSemaphore);
 	        }
+
+	        // Reset resend tracking after transmission session
+	        memset(resend_indexes, 0, sizeof(resend_indexes));
+	        tx_type_override = 0;
 	    }
 	}
+
+
+
 	void Receive_Task(void *argument)
 	{
 	    for (;;)
@@ -457,24 +474,25 @@ static void MX_USART1_UART_Init(void);
 	            else if (strstr((char*)uart_rx_buffer, "type:3") != NULL)
 	            {
 	                memset(resend_indexes, 0, sizeof(resend_indexes));
+	                tx_type_override = 3;  // <-- set flag
 
 	                char *ind_str = strstr(uart_rx_buffer, "ind:");
 	                if (ind_str) {
-	                    ind_str += 4; // move past "ind:"
+	                    ind_str += 4;
 	                    char *token = strtok(ind_str, ",");
 	                    while (token != NULL) {
 	                        int idx = atoi(token);
-	                        if (idx >= 0 && idx < 5) {
-	                            resend_indexes[idx] = 1;
+	                        if (idx >= 1 && idx <= MAX_READINGS) {
+	                            resend_indexes[idx - 1] = 1;  // fix index offset
 	                        }
 	                        token = strtok(NULL, ",");
 	                    }
 
+	                    resend_requested = true;
 	                    xTaskNotifyGive(xTX_Task);
-	                } else {
-	                    printf("Failed to parse type:3 indexes\n");
 	                }
 	            }
+
 	            else
 	            {
 	                printf("Unknown type\n");
@@ -495,7 +513,7 @@ static void MX_USART1_UART_Init(void);
 	void BootTask(void *params) {
 
 		for(;;){
-			//ParseGPSAndSetRTC();
+			ParseGPSAndSetRTC();
 			Batt_raw = Read_ADC_Channel(ADC_CHANNEL_0); // Read battery voltage from ADC channel 0
 			if (Batt_raw < Level_0 ) {// 0-10%
 				printf("Battery Level: 0-10%%\n");
@@ -524,8 +542,10 @@ static void MX_USART1_UART_Init(void);
 				sleep_lvl = 1;
 				printf("Battery Level: 40-50%%\n");
 				}
+			char timestamp[32] = {0};
+			get_timestamp(timestamp);  // Must return "YYYY-MM-DDTHH:MM:SS+08:00"
 			//Transmit the Wakeuptime via UART6
-			snprintf(uart_buf, sizeof(uart_buf), "type 4: %d", sleep_lvl);
+			snprintf(uart_buf, sizeof(uart_buf), "type:4,time:%s,awc:%d",timestamp, sleep_lvl);
 			HAL_UART_Transmit(&huart6, (uint8_t *)uart_buf, strlen(uart_buf), HAL_MAX_DELAY);
 			printf("Waiting..\n");
 			vTaskDelay(pdMS_TO_TICKS(60000)); // Wait 1 minute before continuing
@@ -580,8 +600,12 @@ int main(void)
 //	  Format_SD();
 //	  Create_File("LOGS.TXT");
 //	  Unmount_SD("/");
-	  HAL_TIM_Base_Start(&htim2); // Timer for Temp
+
 	  HAL_TIM_Base_Start(&htim1); // periodic delay timer for SD Card
+	  HAL_TIM_Base_Start(&htim2); // Timer for Temp
+
+
+
 //	  xTaskCreate(MainTask_handle, "Main-Task", 1000, NULL, 3,  &xMainTask);
 //	  configASSERT(xMainTask != NULL);
 	  xTaskCreate(BootTask, "Boot", 1024, NULL, 2, &xBoot); // Priority 3
@@ -1066,7 +1090,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_0|GPIO_PIN_3, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_12, GPIO_PIN_RESET);
@@ -1086,10 +1110,10 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PC3 */
-  GPIO_InitStruct.Pin = GPIO_PIN_3;
+  /*Configure GPIO pins : PC0 PC3 PC4 PC5 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
@@ -1099,24 +1123,10 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PC4 PC5 */
-  GPIO_InitStruct.Pin = GPIO_PIN_4|GPIO_PIN_5;
+  /*Configure GPIO pins : PA10 PA15 */
+  GPIO_InitStruct.Pin = GPIO_PIN_10|GPIO_PIN_15;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PA10 */
-  GPIO_InitStruct.Pin = GPIO_PIN_10;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PA15 */
-  GPIO_InitStruct.Pin = GPIO_PIN_15;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
@@ -1188,7 +1198,7 @@ static void MX_GPIO_Init(void)
 	    HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
 	    HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
 
-	    sprintf(buffer, "2025-%02d-%02dT%02d:%02d:%02d.000Z",
+	    sprintf(buffer, "2025-%02d-%02dT%02d:%02d:%02d+08:00",
 	            sDate.Month, sDate.Date,
 	            sTime.Hours, sTime.Minutes, sTime.Seconds);
 	}

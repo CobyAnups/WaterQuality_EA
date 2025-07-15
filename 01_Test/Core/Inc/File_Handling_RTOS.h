@@ -12,7 +12,7 @@
 #include "string.h"
 #include "stdio.h"
 #include "fatfs_sd.h"
-
+#include "FreeRTOS.h"
 
 /* mounts the sd card*/
 void Mount_SD (const TCHAR* path);

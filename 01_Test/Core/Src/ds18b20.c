@@ -108,7 +108,7 @@ uint8_t DS18B20_Read (void)
 	return value;
 }
 
-int16_t Temperature_Read(void)
+float Temperature_Read(void)
 {
 	uint8_t Temp_byte1, Temp_byte2;
 
