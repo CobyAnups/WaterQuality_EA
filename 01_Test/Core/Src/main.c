@@ -229,7 +229,7 @@ static void MX_USART1_UART_Init(void);
 				vTaskDelay(pdMS_TO_TICKS(200));
 
 
-
+				//READ BATTERY LEVEL
 				//Batt_raw = Read_ADC_Channel(ADC_CHANNEL_0); //TODO CHANGE
 				Batt_raw = 2000;
 				HAL_GPIO_WritePin(EA_RELAY_GPIO , GPIO_PIN_SET);
@@ -274,8 +274,8 @@ static void MX_USART1_UART_Init(void);
 					printf("PUMP ON\n");
 					HAL_GPIO_WritePin(PUMP1, GPIO_PIN_RESET);  // PC3: Pump ON
 
-					vTaskDelay(pdMS_TO_TICKS(PUMP1_DURATION ));  // 90 seconds delay while ON //todo time
-
+					//vTaskDelay(pdMS_TO_TICKS(PUMP1_DURATION ));  // 90 seconds delay while ON //todo time
+					vTaskDelay(pdMS_TO_TICKS(1000 ));
 
 					// Turn Pump OFF
 					printf("PUMP OFF, SENSORS ON\n");
@@ -284,7 +284,7 @@ static void MX_USART1_UART_Init(void);
 
 					HAL_GPIO_WritePin(pH_POWER, GPIO_PIN_SET);   // PC4: Sensor ON
 					HAL_GPIO_WritePin(Temp_POWER, GPIO_PIN_SET);   // PC5: Sensor ON
-					vTaskDelay(pdMS_TO_TICKS(3000));  // 60 seconds delay while pump is OFF //todo time
+					vTaskDelay(pdMS_TO_TICKS(1000));  // 60 seconds delay while pump is OFF //todo time
 
 
 					// Read Sensors
@@ -299,7 +299,7 @@ static void MX_USART1_UART_Init(void);
 					    r.do_val = Read_ADC_Channel(ADC_CHANNEL_1)/100; //todo
 					    r.batt = 80; //todo
 					    r.index = i + 1; // Index starts from 1
-					    printf("%.2f",r.temp);
+
 					    readings[i] = r;
 					    reading_ids[i] = global_id++;
 
@@ -327,17 +327,17 @@ static void MX_USART1_UART_Init(void);
 
 					printf("StartClean \n");
 					HAL_GPIO_WritePin(PUMP3, GPIO_PIN_RESET);  // PA15: Pump ON
-					vTaskDelay(pdMS_TO_TICKS(5000)); //todo time
+					vTaskDelay(pdMS_TO_TICKS(2000)); //todo time
 
 					printf("StopClean\n");
 					HAL_GPIO_WritePin(PUMP3, GPIO_PIN_SET);  // PA15: Pump OFF
-					vTaskDelay(pdMS_TO_TICKS(5000));
+					vTaskDelay(pdMS_TO_TICKS(2000));
 
 
 
 					printf("StopDispose \n");
 					HAL_GPIO_WritePin(PUMP2, GPIO_PIN_SET);  // PC0: Pump OFF
-					vTaskDelay(pdMS_TO_TICKS(10000)); //ADDED 10 seconds delay before next cycle
+					vTaskDelay(pdMS_TO_TICKS(5000)); //ADDED 10 seconds delay before next cycle
 				}
 			}
 		}
@@ -347,7 +347,7 @@ static void MX_USART1_UART_Init(void);
 	void TX_Task(void *params)//----------------------------------------------------------------------------------------------------//
 	{
 	    char tx_buf[256];
-	    const TickType_t ack_timeout = pdMS_TO_TICKS(60000);  // 60 seconds
+	    const TickType_t ack_timeout = pdMS_TO_TICKS(30000);  // 60 seconds
 	    const TickType_t poll_interval = pdMS_TO_TICKS(100);  // 100ms polling interval
 
 	    for (;;)
@@ -386,7 +386,7 @@ static void MX_USART1_UART_Init(void);
 	                         tx_type_str, id, r.timestamp, r.temp, r.ph, r.do_val, r.batt, r.index);
 	                HAL_UART_Transmit(&huart6, (uint8_t *)tx_buf, strlen(tx_buf), HAL_MAX_DELAY);
 	                printf("%s \n", tx_buf);
-	                vTaskDelay(pdMS_TO_TICKS(3000));  // Delay between packets
+	                vTaskDelay(pdMS_TO_TICKS(5000));  // Delay between packets
 	            }
 
 	            // Wait for ACK or Resend (with resettable timeout)
@@ -1206,7 +1206,7 @@ static void MX_GPIO_Init(void)
 	    char *token;
 	    RTC_TimeTypeDef sTime = {0};
 	    RTC_DateTypeDef sDate = {0};
-	    printf("Parsing GPS data to set RTC...\n");
+	    printf("Parsing GPS data to RTC...\n");
 
 	    uint32_t startTick = HAL_GetTick();
 	    uint32_t timeout_ms = 5000;  // 5 seconds
@@ -1222,13 +1222,9 @@ static void MX_GPIO_Init(void)
 	        if (status == HAL_OK) {
 	            gps_buffer[gps_index++] = byte;
 
-	            // Optional: Echo received byte
-	            //printf("%d",byte);
-
 	            if (byte == '\n') break;  // End of NMEA sentence
 	        } else if (status == HAL_TIMEOUT) {
-	            // Optional: print '.' or tick to show we’re still waiting
-	            printf(".");
+
 	        } else {
 	            printf("UART Receive error: %d\n", status);
 	            break;
@@ -1247,7 +1243,7 @@ static void MX_GPIO_Init(void)
 	    // Step 2: Find the $GPRMC sentence
 	    char *rmc_ptr = strstr(gps_buffer, "$GPRMC");
 	    if (!rmc_ptr) {
-	        printf("No GPRMC sentence found\n");
+	        printf("No GPRMC found\n");
 	        return;
 	    }
 
