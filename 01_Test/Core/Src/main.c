@@ -70,7 +70,7 @@
 	#define PUMP1_DURATION     		45000
 	#define SENSOR_ON_DURATION_MS   3000
 	#define PUMP2_DURATION     		45000
-	#define PUMP3_DURATION        	3000
+	#define PUMP3_DURATION        	5000
 
 	#define BKP_REG_SYNC_FLAG RTC_BKP_DR1
 	#define RTC_SYNC_MAGIC    0x32F2  // Arbitrary unique value
@@ -195,6 +195,7 @@ static void MX_USART1_UART_Init(void);
 	static void Receive_Task(void* parameters);
 	static void BootTask(void *params);
 	static void get_timestamp(char* buffer);
+	static void PrintGPSTimeFormatted(void);
 //	static void WaitForACKOrRetry(void);
 
 /* USER CODE END PFP */
@@ -337,6 +338,8 @@ static void MX_USART1_UART_Init(void);
 
 					printf("StopDispose \n");
 					HAL_GPIO_WritePin(PUMP2, GPIO_PIN_SET);  // PC0: Pump OFF
+					vTaskDelay(pdMS_TO_TICKS(200)); //todo time
+					xSemaphoreGive(xLowPowerSemaphore);
 					vTaskDelay(pdMS_TO_TICKS(5000)); //ADDED 10 seconds delay before next cycle
 				}
 			}
@@ -396,7 +399,7 @@ static void MX_USART1_UART_Init(void);
 	            {
 	                if (xSemaphoreTake(xAckSemaphore, poll_interval) == pdTRUE) {
 	                    printf("ACK received. Proceeding to STOP mode.\n");
-	                    xSemaphoreGive(xLowPowerSemaphore);
+
 	                    ack_received = pdTRUE;
 	                    break;
 	                }
@@ -513,7 +516,8 @@ static void MX_USART1_UART_Init(void);
 	void BootTask(void *params) {
 
 		for(;;){
-			ParseGPSAndSetRTC();
+			//ParseGPSAndSetRTC();
+			PrintGPSTimeFormatted();
 			Batt_raw = Read_ADC_Channel(ADC_CHANNEL_0); // Read battery voltage from ADC channel 0
 			if (Batt_raw < Level_0 ) {// 0-10%
 				printf("Battery Level: 0-10%%\n");
@@ -1203,6 +1207,7 @@ static void MX_GPIO_Init(void)
 	            sTime.Hours, sTime.Minutes, sTime.Seconds);
 	}
 	void ParseGPSAndSetRTC(void) {
+
 	    char *token;
 	    RTC_TimeTypeDef sTime = {0};
 	    RTC_DateTypeDef sDate = {0};
@@ -1287,6 +1292,83 @@ static void MX_GPIO_Init(void)
 	           sDate.Date, sDate.Month, sDate.Year);
 	}
 
+	void PrintGPSTimeFormatted(void) {
+	    char line[128] = {0};
+	    uint8_t byte;
+	    int idx = 0;
+
+	    while (1) {
+	        if (HAL_UART_Receive(&huart1, &byte, 1, HAL_MAX_DELAY) == HAL_OK) {
+	        	printf("%c", byte); // Print received byte for debugging
+	            //HAL_UART_Transmit(&huart2, &byte, 1, HAL_MAX_DELAY); // Debug echo
+
+	            if (byte == '\n') {
+	                line[idx] = '\0';
+
+	                if (strstr(line, "$GPRMC")) {
+	                    char *token = strtok(line, ","); // $GPRMC
+	                    token = strtok(NULL, ",");       // UTC time
+	                    if (!token || strlen(token) < 6) { idx = 0; continue; }
+
+	                    int hh = (token[0] - '0') * 10 + (token[1] - '0') + 8; // +8 for timezone
+	                    int mm = (token[2] - '0') * 10 + (token[3] - '0');
+	                    int ss = (token[4] - '0') * 10 + (token[5] - '0');
+	                    if (hh >= 24) hh -= 24; // wrap around midnight UTC+8
+
+	                    token = strtok(NULL, ","); // Status (A/V)
+	                    if (token && token[0] == 'A') {
+
+	                        RTC_TimeTypeDef sTime = {0};
+	                        RTC_DateTypeDef sDate = {0};
+
+	                        sTime.Hours = hh;
+	                        sTime.Minutes = mm;
+	                        sTime.Seconds = ss;
+
+	                        // Example fallback date (will be overwritten later if needed)
+	                        sDate.Year = 25;
+	                        sDate.Month = RTC_MONTH_JULY;
+	                        sDate.Date = 22;
+	                        sDate.WeekDay = RTC_WEEKDAY_THURSDAY;
+
+	                        // Optional: try parsing date from GPRMC
+	                        token = strtok(NULL, ","); // Latitude
+	                        token = strtok(NULL, ","); // N/S
+	                        token = strtok(NULL, ","); // Longitude
+	                        token = strtok(NULL, ","); // E/W
+	                        token = strtok(NULL, ","); // Speed
+	                        token = strtok(NULL, ","); // Course
+	                        token = strtok(NULL, ","); // Date (ddmmyy)
+	                        if (token && strlen(token) == 6) {
+	                            sDate.Date = (token[0] - '0') * 10 + (token[1] - '0');
+	                            sDate.Month = (token[2] - '0') * 10 + (token[3] - '0');
+	                            sDate.Year = (token[4] - '0') * 10 + (token[5] - '0');
+	                        }
+
+	                        if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BIN) != HAL_OK) {
+	                            Error_Handler();
+	                        }
+
+	                        if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BIN) != HAL_OK) {
+	                            Error_Handler();
+	                        }
+
+	                        HAL_RTCEx_BKUPWrite(&hrtc, BKP_REG_SYNC_FLAG, RTC_SYNC_MAGIC); // Save sync flag
+	                        printf("RTC set from GPS: %02d:%02d:%02d %02d/%02d/%02d\n",
+	                               sTime.Hours, sTime.Minutes, sTime.Seconds,
+	                               sDate.Date, sDate.Month, sDate.Year);
+	                        return; // ✅ Exit after setting RTC
+	                    }
+	                }
+
+	                idx = 0;
+	                memset(line, 0, sizeof(line));
+	            } else if (idx < sizeof(line) - 1) {
+	                line[idx++] = byte;
+	            }
+	        }
+	    }
+	}
 
 	void vPortSuppressTicksAndSleep(TickType_t xExpectedIdleTime)
 	{
